@@ -1,0 +1,565 @@
+/* 9go · Mandala 3x3 grid
+   Theme-adaptive: uses Obsidian CSS variables, works in light & dark. */
+
+.enm-view {
+  padding: 0;
+  overflow: hidden;
+}
+
+.enm-root,
+.enm-embed {
+  --enm-gap: 6px;
+  --enm-border: var(--background-modifier-border, rgba(127, 127, 127, 0.35));
+  --enm-bg: var(--background-secondary, #202126);
+  --enm-bg-center: var(--background-primary-alt, #17191d);
+  --enm-fg: var(--text-normal, #dadada);
+  --enm-muted: var(--text-muted, #999);
+  --enm-faint: var(--text-faint, #666);
+  --enm-accent: var(--interactive-accent, #7c6df2);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  color: var(--enm-fg);
+  font-size: var(--font-text-size, 15px);
+}
+
+.enm-embed {
+  min-height: 300px;
+  border: 1px solid var(--enm-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* ---------------------------------- toolbar */
+.enm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--enm-border);
+  flex: 0 0 auto;
+}
+
+.enm-toolbar-left,
+.enm-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.enm-crumb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86em;
+  color: var(--enm-muted);
+}
+
+.enm-pageinfo,
+.enm-countinfo {
+  font-size: 0.8em;
+  color: var(--enm-muted);
+  white-space: nowrap;
+}
+
+.enm-btn {
+  background: var(--background-modifier-hover, rgba(127, 127, 127, 0.12));
+  color: var(--enm-fg);
+  border: 1px solid var(--enm-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.8em;
+  cursor: pointer;
+  box-shadow: none;
+  white-space: nowrap;
+}
+.enm-btn:hover:not(:disabled) {
+  background: var(--background-modifier-active-hover, rgba(127, 127, 127, 0.22));
+}
+.enm-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ---------------------------------- grid */
+.enm-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: var(--enm-gap);
+  padding: var(--enm-gap);
+  flex: 1 1 auto;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.enm-cell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--enm-border);
+  border-radius: 6px;
+  background: var(--enm-bg);
+  padding: 22px 12px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.enm-cell-center {
+  background: var(--enm-bg-center);
+  border-color: var(--enm-accent);
+  box-shadow: inset 0 0 0 1px rgba(124, 109, 242, 0.18);
+}
+
+.enm-cell-empty {
+  background: transparent;
+  border-color: var(--enm-border);
+  opacity: 0.75;
+}
+
+.enm-cell-label {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font-size: 0.75em;
+  color: var(--enm-faint);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.enm-cell-title {
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+  cursor: default;
+  user-select: text;
+}
+
+.enm-cell-filled .enm-cell-title {
+  cursor: pointer;
+}
+.enm-cell-filled .enm-cell-title:hover {
+  color: var(--enm-accent);
+}
+
+.enm-center-title {
+  font-size: 1.18em;
+  text-align: center;
+  margin-top: 2px;
+}
+
+.enm-notes {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  font-size: 0.86em;
+  color: var(--enm-muted);
+  mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 82%, transparent 100%);
+}
+
+.enm-cell-center .enm-notes {
+  text-align: left;
+}
+
+.enm-cell-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: auto;
+  position: relative;
+  z-index: 2;
+}
+
+.enm-link {
+  font-size: 0.82em;
+  color: var(--enm-accent);
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px dashed currentColor;
+  padding-bottom: 1px;
+}
+.enm-link:hover {
+  filter: brightness(1.2);
+}
+.enm-link-more {
+  font-weight: 600;
+}
+
+.enm-childcount,
+.enm-empty-hint {
+  font-size: 0.74em;
+  color: var(--enm-faint);
+  position: absolute;
+  bottom: 8px;
+  left: 12px;
+}
+
+/* 左下「下级 N」是进入下一级九宫格的入口（取代原 ⤵ 图标）。 */
+.enm-childcount-drill {
+  z-index: 3;
+  cursor: pointer;
+  padding-bottom: 1px;
+  border-bottom: 1px dashed transparent;
+  user-select: none;
+}
+.enm-childcount-drill:hover {
+  color: var(--enm-accent);
+  border-bottom-color: currentColor;
+}
+
+.enm-cell-toggle,
+.enm-cell-locate {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--enm-border);
+  background: var(--background-primary, #16181c);
+  color: var(--enm-fg);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.enm-cell-toggle:hover,
+.enm-cell-locate:hover {
+  border-color: var(--enm-accent);
+  color: var(--enm-accent);
+}
+.enm-cell-locate {
+  right: 38px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.enm-cell:hover .enm-cell-locate {
+  opacity: 1;
+}
+
+.enm-empty {
+  padding: 32px;
+  color: var(--text-muted, #999);
+  line-height: 1.7;
+}
+
+/* narrow panes */
+@media (max-width: 620px) {
+  .enm-cell {
+    padding: 18px 8px 26px;
+  }
+  .enm-notes {
+    font-size: 0.78em;
+  }
+  .enm-crumb {
+    max-width: 130px;
+  }
+}
+
+/* ---------------------------------- v1.1.0 interactions */
+.enm-cell-locatable {
+  cursor: pointer;
+}
+.enm-cell-locatable:hover {
+  border-color: var(--enm-accent);
+}
+
+.enm-cell-addable {
+  cursor: copy;
+  border-style: dashed;
+  align-items: center;
+  justify-content: center;
+}
+.enm-cell-addable:hover {
+  border-color: var(--enm-accent);
+  background: var(--background-modifier-hover, rgba(127, 127, 127, 0.08));
+  opacity: 1;
+}
+.enm-add-hint {
+  font-size: 0.82em;
+  color: var(--enm-faint);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  text-align: center;
+}
+.enm-cell-addable:hover .enm-add-hint {
+  color: var(--enm-accent);
+}
+
+/* Locate highlight. The duration is owned by JS (LocateFlash), not by a CSS
+   animation: CodeMirror rebuilds .cm-line nodes while scrolling, so an
+   animation attached to one concrete node is cut short unpredictably. */
+.enm-locate-flash {
+  background-color: var(--text-highlight-bg, rgba(255, 208, 0, 0.55));
+  box-shadow: inset 3px 0 0 var(--enm-accent);
+  border-radius: 3px;
+}
+/* Added only when the deadline expires; fades the steady highlight out. */
+.enm-locate-flash.enm-locate-flash-fade {
+  background-color: transparent;
+  box-shadow: none;
+  transition: background-color 220ms ease-out, box-shadow 220ms ease-out;
+}
+
+/* New-node / edit-node modal */
+.enm-modal .enm-modal-hint {
+  font-size: 0.84em;
+  color: var(--text-muted, #999);
+  line-height: 1.6;
+  margin: 0 0 14px;
+}
+
+/* Collapsible hint for the edit dialog. Native details/summary supplies the
+   disclosure triangle without JS. No has() (unsupported in this build). */
+.enm-modal-hint-details {
+  margin: 0 0 14px;
+  font-size: 0.84em;
+  color: var(--text-muted, #999);
+}
+.enm-modal-hint-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--enm-muted);
+  font-size: 0.92em;
+}
+.enm-modal-hint-details > summary::-webkit-details-marker {
+  display: none;
+}
+.enm-modal-hint-details > summary::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+}
+.enm-modal-hint-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.enm-modal-hint-details > summary:hover {
+  color: var(--enm-accent);
+}
+.enm-modal-hint-details > .enm-modal-hint {
+  margin: 8px 0 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--enm-border);
+}
+
+/* Editing an existing node: make the two editable rows unmistakable. */
+.enm-modal-editing .setting-item-info .setting-item-name,
+.enm-modal-editing .enm-modal-notes-wrap .enm-modal-label {
+  color: var(--enm-accent);
+  font-weight: 600;
+}
+.enm-modal-editing .setting-item-control input,
+.enm-modal-editing .enm-modal-notes {
+  border: 2px solid var(--enm-accent) !important;
+  background: var(--background-primary, #16181c);
+  box-shadow: 0 0 0 2px rgba(124, 109, 242, 0.16);
+}
+.enm-modal-editing .setting-item-control input:focus,
+.enm-modal-editing .enm-modal-notes:focus {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(124, 109, 242, 0.32);
+}
+.enm-modal-notes-wrap {
+  margin: 12px 0 4px;
+}
+.enm-modal-label {
+  font-size: 0.86em;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.enm-modal-notes {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 110px;
+  font-family: var(--font-text, inherit);
+  font-size: var(--font-text-size, 15px);
+  line-height: 1.5;
+}
+.enm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* ---------------------------------- v1.2.0 numbering + drag & drop */
+.enm-cell-index {
+  position: absolute;
+  top: 6px;
+  left: 12px;
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--enm-accent);
+  pointer-events: none;
+  z-index: 1;
+}
+.enm-cell-index-empty {
+  color: var(--enm-faint);
+  font-weight: 400;
+  opacity: 0.65;
+}
+.enm-cell-center .enm-cell-index {
+  font-size: 0.86em;
+}
+
+.enm-cell-draggable {
+  cursor: grab;
+}
+.enm-cell-draggable:active {
+  cursor: grabbing;
+}
+.enm-drag-source {
+  opacity: 0.42;
+  border-style: dashed;
+}
+
+.enm-drop-target {
+  border-color: var(--enm-accent);
+  box-shadow: inset 0 0 0 1px var(--enm-accent);
+}
+/* v1.3.1: 中心格作为「上升一级」放置目标时的整格高亮 */
+.enm-cell-center.enm-drop-target {
+  box-shadow: inset 0 0 0 2px var(--enm-accent);
+}
+.enm-drop-before::before,
+.enm-drop-after::before,
+.enm-drop-before::after,
+.enm-drop-after::after {
+  content: "";
+  position: absolute;
+  background: var(--enm-accent);
+  z-index: 4;
+  pointer-events: none;
+  border-radius: 2px;
+}
+/* "before" marks the left + top edges (an L-shaped insertion indicator) */
+.enm-drop-before::before {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+.enm-drop-before::after {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+}
+/* "after" marks the right + bottom edges */
+.enm-drop-after::before {
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+.enm-drop-after::after {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+}
+
+.enm-setting-note {
+  font-size: 0.84em;
+  color: var(--text-muted, #999);
+  line-height: 1.6;
+  margin: 4px 0 10px;
+}
+
+/* ---------------------------------- v1.3.0 caret follow + node editing */
+.enm-cell-focus {
+  border-color: var(--enm-accent);
+  box-shadow: inset 0 0 0 2px var(--enm-accent);
+}
+.enm-cell-focus.enm-cell-center {
+  box-shadow: inset 0 0 0 2px var(--enm-accent), 0 0 0 1px var(--enm-accent);
+}
+
+.enm-follow-badge {
+  font-size: 0.76em;
+  color: var(--enm-accent);
+  border: 1px solid var(--enm-accent);
+  border-radius: 10px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+/* Three round action buttons share ONE size (24px) and ONE centre-to-centre
+   spacing (30px): toggle 8 -> locate 38 -> edit 68.
+   The former drill button was removed; use the "下级 N" label instead.
+   No has() anywhere: this Obsidian build's Chromium silently drops it. */
+.enm-cell-edit {
+  position: absolute;
+  bottom: 8px;
+  right: 68px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--enm-border);
+  background: var(--background-primary, #16181c);
+  color: var(--enm-fg);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 3;
+}
+.enm-center-edit { right: 38px; }
+.enm-cell:hover .enm-cell-edit {
+  opacity: 1;
+}
+.enm-cell-edit:hover {
+  border-color: var(--enm-accent);
+  color: var(--enm-accent);
+}
+
+/* Narrow panes: scale all three circles together (20px) and keep the same
+   24px centre-to-centre spacing used by the locate/toggle pair. */
+@media (max-width: 620px) {
+  .enm-cell-toggle,
+  .enm-cell-locate,
+  .enm-cell-edit {
+    width: 20px;
+    height: 20px;
+    font-size: 11px;
+  }
+  .enm-cell-locate { right: 32px; }
+  .enm-cell-edit { right: 56px; }
+  .enm-center-edit { right: 32px; }
+}

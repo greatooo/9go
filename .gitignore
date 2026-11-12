@@ -1,0 +1,28 @@
+# vscode
+.vscode
+
+# JetBrains
+*.iml
+.idea
+
+# npm
+node_modules
+package-lock.json
+
+# build output —— 只作为 Release 资产上传，不进仓库
+main.js
+.core-test-bundle.cjs
+*.map
+
+# obsidian 用户设置
+data.json
+
+# 本机备份链与 Obsidian 编辑历史
+.bak-*
+*.edtz
+
+# macOS
+.DS_Store
+
+# 临时
+*.log

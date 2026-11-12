@@ -1,0 +1,24 @@
+{
+  "name": "9go",
+  "version": "1.3.1",
+  "description": "Mandala (3x3) view for Markdown outlines in Obsidian, compatible with gogoga-mindmap note syntax.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test_core.cjs && node test_grid.cjs && node test_real_note.cjs"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "mindmap",
+    "mandala",
+    "outline"
+  ],
+  "author": "Guo.r",
+  "license": "0BSD",
+  "devDependencies": {
+    "esbuild": "0.14.47",
+    "obsidian": "latest",
+    "typescript": "^4.7.4"
+  }
+}
