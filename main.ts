@@ -305,6 +305,18 @@ async function blockImageSrc(
 // Grid renderer (shared by the ItemView and the ```mandala code block)
 // ------------------------------------------------------------------ //
 
+/** A resolved thumbnail, handed to the caller lightbox by GridOptions. */
+export interface PreviewImage {
+  src: string;
+  label: string;
+}
+
+/** Pure helper: wrap around a preview list. Exported for Node regressions. */
+function previewIndex(current: number, delta: number, total: number): number {
+  if (total <= 0) return 0;
+  return ((current + delta) % total + total) % total;
+}
+
 interface GridOptions {
   showNotes: boolean;
   noteMaxChars: number;
@@ -313,6 +325,8 @@ interface GridOptions {
   thumbMaxHeight?: number;
   resolveImageSrc?: (img: NoteImage) => string | null;
   resolveBlockImage?: (img: NoteImage) => Promise<string | null>;
+  /** v1.3.2 patch: click a thumbnail -> full-size preview (optional for harnesses). */
+  onPreviewImage?: (images: PreviewImage[], index: number) => void;
   autoCollapseSingleRoot: boolean;
   singleClickLocate?: boolean;
   slots?: Array<[number, number]>;
@@ -334,7 +348,13 @@ class MandalaGrid {
   private stack: OutlineNode[];
   private slots: Array<[number, number]>;
   private page = 0;
-  private expanded = new Set<string>();
+  /**
+   * v1.3.2 patch: tri-state note visibility for surrounding cells.
+   * A missing key follows the global "show notes" setting; true/false is an
+   * explicit user override. The old Set could only force notes OPEN, so with
+   * the setting ON the toggle appeared to do nothing.
+   */
+  private noteOpen = new Map<string, boolean>();
   /**
    * v1.3.1: `null` = follow the global "show notes" setting (so the centre
    * cell displays its notes by default when that setting is on); otherwise
@@ -378,6 +398,15 @@ class MandalaGrid {
 
   getPage(): number {
     return this.page;
+  }
+
+  /** Snapshot of per-cell note overrides so they survive a grid rebuild. */
+  getNoteOverrides(): Array<[string, boolean]> {
+    return Array.from(this.noteOpen.entries());
+  }
+
+  applyNoteOverrides(entries: Array<[string, boolean]>): void {
+    this.noteOpen = new Map(entries || []);
   }
 
   /**
@@ -639,7 +668,7 @@ class MandalaGrid {
       if (this.stack.length <= 1) return;
       this.stack.pop();
       this.page = 0;
-      this.expanded.clear();
+      this.noteOpen.clear();
       this.render();
     });
 
@@ -751,7 +780,7 @@ class MandalaGrid {
         e.stopPropagation();
         this.stack.pop();
         this.page = 0;
-        this.expanded.clear();
+        this.noteOpen.clear();
         this.render();
       });
     }
@@ -863,7 +892,8 @@ class MandalaGrid {
         });
       }
 
-      const isOpen = this.expanded.has(key) || this.opts.showNotes;
+      const override = this.noteOpen.get(key);
+      const isOpen = override === undefined ? this.opts.showNotes : override;
       this.addNoteBlock(cell, node, key, isOpen);
 
       // last slot of the sequence also carries "more / back" links
@@ -892,9 +922,10 @@ class MandalaGrid {
         text: isOpen ? "⌃" : "⌄",
       });
       toggle.setAttr("aria-label", tr("toggleNotesAria"));
-      toggle.addEventListener("click", () => {
-        if (this.expanded.has(key)) this.expanded.delete(key);
-        else this.expanded.add(key);
+      toggle.setAttr("title", tr("toggleNotesTitle"));
+      toggle.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.noteOpen.set(key, !isOpen);
         this.render();
       });
 
@@ -975,22 +1006,42 @@ class MandalaGrid {
     const wrap = cell.createDiv({ cls: "enm-thumbs" });
     wrap.setAttr("style", `--enm-thumb-max-h:${maxH}px`);
 
-    for (const ref of refs) {
+    // Keep resolved URLs in JS (not DOM attributes) so a fake-DOM harness can
+    // assert the preview payload, and async block refs can join the list late.
+    const resolved: Array<PreviewImage | null> = refs.map(() => null);
+    const openAt = (i: number) => {
+      const current = resolved[i];
+      if (!current || !this.opts.onPreviewImage) return;
+      const all = resolved.filter((x): x is PreviewImage => !!x);
+      const index = resolved.slice(0, i + 1).filter(
+        (x): x is PreviewImage => !!x
+      ).length - 1;
+      this.opts.onPreviewImage!(all, Math.max(0, index));
+    };
+
+    refs.forEach((ref, i) => {
       const img = wrap.createEl("img", { cls: "enm-thumb" });
       const label = ref.kind === "block"
         ? `[[${ref.src}#^${ref.blockId}]]`
         : ref.src || ref.alt || tr("imageFallback");
       img.setAttr("alt", ref.alt || tr("imageAlt"));
       img.setAttr("title", label);
+      img.setAttr("aria-label", tr("imageZoomTitle"));
       img.setAttr("loading", "lazy");
       img.addEventListener("error", () => img.addClass("enm-thumb-failed"));
+      img.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.cancelPendingLocate();
+        openAt(i);
+      });
 
       const direct = this.opts.resolveImageSrc
         ? this.opts.resolveImageSrc(ref)
         : ref.kind === "external" ? ref.src : null;
       if (direct) {
         img.setAttr("src", direct);
-        continue;
+        resolved[i] = { src: direct, label };
+        return;
       }
       if (ref.kind === "block" && this.opts.resolveBlockImage) {
         void this.opts
@@ -998,14 +1049,16 @@ class MandalaGrid {
           .then((src) => {
             // render() may have rebuilt the grid while the file was read.
             if ((img as unknown as { isConnected?: boolean }).isConnected === false) return;
-            if (src) img.setAttr("src", src);
-            else img.addClass("enm-thumb-failed");
+            if (src) {
+              img.setAttr("src", src);
+              resolved[i] = { src, label };
+            } else img.addClass("enm-thumb-failed");
           })
           .catch(() => img.addClass("enm-thumb-failed"));
-        continue;
+        return;
       }
       img.addClass("enm-thumb-failed");
-    }
+    });
   }
 
   private addPageLinks(cell: HTMLElement): void {
@@ -1020,7 +1073,7 @@ class MandalaGrid {
         e.preventDefault();
         e.stopPropagation();
         this.page = clampPage(this.page - 1, this.center.children.length);
-        this.expanded.clear();
+        this.noteOpen.clear();
         this.render();
       });
     }
@@ -1037,7 +1090,7 @@ class MandalaGrid {
       e.preventDefault();
       e.stopPropagation();
       this.page = this.page + 1;
-      this.expanded.clear();
+      this.noteOpen.clear();
       this.render();
     });
   }
@@ -1048,10 +1101,107 @@ class MandalaGrid {
     if (this.center === node) return;
     this.stack.push(node);
     this.page = 0;
-    this.expanded.clear();
+    this.noteOpen.clear();
     // v1.3.1: drop the manual override so the new centre follows the setting.
     this.centerOpen = null;
     this.render();
+  }
+}
+
+// ------------------------------------------------------------------ //
+// Image lightbox (v1.3.2 patch): click a thumbnail to view it full size.
+// ------------------------------------------------------------------ //
+
+class ImageLightbox extends Modal {
+  private images: PreviewImage[];
+  private index: number;
+  private imgEl: HTMLElement | null = null;
+  private counterEl: HTMLElement | null = null;
+  private captionEl: HTMLElement | null = null;
+  private keyHandler: ((e: KeyboardEvent) => void) | null = null;
+
+  constructor(app: App, images: PreviewImage[], index: number) {
+    super(app);
+    this.images = (images || []).filter((x) => !!x && !!x.src);
+    this.index = Math.max(0, Math.min(index, this.images.length - 1));
+  }
+
+  private draw(): void {
+    const cur = this.images[this.index];
+    if (!cur) return;
+    if (this.imgEl) this.imgEl.setAttr("src", cur.src);
+    if (this.counterEl) {
+      this.counterEl.setText(tr("imageLightboxCounter", {
+        i: this.index + 1,
+        n: this.images.length,
+      }));
+    }
+    if (this.captionEl) this.captionEl.setText(cur.label);
+  }
+
+  private step(delta: number): void {
+    this.index = previewIndex(this.index, delta, this.images.length);
+    this.draw();
+  }
+
+  onOpen(): void {
+    const { contentEl, modalEl } = this;
+    modalEl.addClass("enm-lightbox-modal");
+    modalEl.setAttr("style", "max-width:94vw;width:auto;");
+    contentEl.addClass("enm-lightbox-content");
+    contentEl.setAttr("style", "padding:0;background:transparent;box-shadow:none;");
+
+    const stage = contentEl.createDiv({ cls: "enm-lightbox-stage" });
+    const bar = stage.createDiv({ cls: "enm-lightbox-bar" });
+    this.counterEl = bar.createSpan({ cls: "enm-lightbox-counter" });
+    const close = bar.createEl("button", {
+      cls: "enm-lightbox-close",
+      text: "✕",
+    });
+    close.setAttr("aria-label", tr("imageLightboxClose"));
+    close.addEventListener("click", () => this.close());
+
+    const body = stage.createDiv({ cls: "enm-lightbox-body" });
+    if (this.images.length > 1) {
+      const prev = body.createEl("button", { cls: "enm-lightbox-nav", text: "‹" });
+      prev.setAttr("aria-label", tr("imageLightboxPrev"));
+      prev.addEventListener("click", (e) => { e.stopPropagation(); this.step(-1); });
+    }
+    this.imgEl = body.createEl("img", { cls: "enm-lightbox-img" });
+    this.imgEl.setAttr("alt", tr("imageAlt"));
+    this.imgEl.addEventListener("error", () => this.imgEl?.addClass("enm-lightbox-failed"));
+    if (this.images.length > 1) {
+      const next = body.createEl("button", { cls: "enm-lightbox-nav", text: "›" });
+      next.setAttr("aria-label", tr("imageLightboxNext"));
+      next.addEventListener("click", (e) => { e.stopPropagation(); this.step(1); });
+    }
+
+    this.captionEl = stage.createDiv({ cls: "enm-lightbox-caption" });
+    stage.createDiv({ cls: "enm-lightbox-hint", text: tr("imageLightboxHint") });
+    this.draw();
+
+    stage.addEventListener("click", (e) => {
+      if (e.target === stage) this.close();
+    });
+    modalEl.addEventListener("click", (e) => {
+      if (e.target === modalEl) this.close();
+    });
+    this.keyHandler = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") this.step(-1);
+      else if (e.key === "ArrowRight") this.step(1);
+    };
+    if (typeof document !== "undefined" &&
+        typeof document.addEventListener === "function") {
+      document.addEventListener("keydown", this.keyHandler);
+    }
+  }
+
+  onClose(): void {
+    if (this.keyHandler && typeof document !== "undefined" &&
+        typeof document.removeEventListener === "function") {
+      document.removeEventListener("keydown", this.keyHandler);
+    }
+    this.keyHandler = null;
   }
 }
 
@@ -1265,6 +1415,7 @@ class MandalaView extends ItemView {
     const prevTitles = this.grid ? this.grid.getStackTitles() : [];
     const prevLines = this.grid ? this.grid.getStackLines() : [];
     const prevPage = this.grid ? this.grid.getPage() : 0;
+    const prevNoteOpen = this.grid ? this.grid.getNoteOverrides() : [];
     const text = await this.app.vault.cachedRead(file);
     const s = this.plugin.settings;
     const outline = parseOutline(text, {
@@ -1281,6 +1432,8 @@ class MandalaView extends ItemView {
       thumbMaxHeight: s.thumbMaxHeight,
       resolveImageSrc: (ref) => imageSrc(this.app, ref, file.path),
       resolveBlockImage: (ref) => blockImageSrc(this.app, ref, file.path),
+      onPreviewImage: (images, index) =>
+        new ImageLightbox(this.app, images, index).open(),
       autoCollapseSingleRoot: s.autoCollapseSingleRoot,
       singleClickLocate: s.singleClickLocate,
       slots: buildSlots(s.firstSlot, s.sortDirection),
@@ -1298,6 +1451,7 @@ class MandalaView extends ItemView {
       },
     });
     grid.applyNavigation(prevTitles, prevPage, prevLines);
+    grid.applyNoteOverrides(prevNoteOpen);
     if (s.followCursor && this.lastCursorLine >= 0) {
       grid.focusAtLine(this.lastCursorLine, s.followCursorMode);
     }
@@ -1690,6 +1844,8 @@ export default class NineGoPlugin extends Plugin {
         thumbMaxHeight: this.settings.thumbMaxHeight,
         resolveImageSrc: (ref) => imageSrc(this.app, ref, sourcePath),
         resolveBlockImage: (ref) => blockImageSrc(this.app, ref, sourcePath),
+        onPreviewImage: (images, index) =>
+          new ImageLightbox(this.app, images, index).open(),
         autoCollapseSingleRoot: this.settings.autoCollapseSingleRoot,
         slots: buildSlots(this.settings.firstSlot, this.settings.sortDirection),
         showSlotCoords: this.settings.showSlotCoords,
@@ -2175,4 +2331,4 @@ class NineGoSettingTab extends PluginSettingTab {
 }
 
 /** Exposed for Node-side regression tests; harmless in Obsidian. */
-export { MandalaGrid, LocateFlash };
+export { MandalaGrid, LocateFlash, previewIndex };

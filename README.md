@@ -329,6 +329,27 @@ NINEGO_OUT="E:/OObsidian/.obsidian/plugins/9go" node build.js
 - **版本**：manifest 保持 **1.3.2**（补丁不升版本）；发布资料包 `999其他文件/9go-release-1.3.2/` 含 4 资产 + 双语 `repo-docs/` + `sha256.txt` + 默认 dry-run 的发布执行器。
 - **待实测**：完全退出 Obsidian 重开 → 设置里把「界面语言」切成 English，确认九宫格 / 编辑弹窗 / Notice / 设置面板全英文；切回中文逐字复原；`auto` 跟随系统语言。
 
+## 备注展开/收起 + 图片点击放大（2026-11-15 第十一轮）
+
+- **需求**：① 格子右下「展开/收起备注」按钮无法在两态间切换，只能按设置里的固定状态显示；② 缩略图点击后不能放大。
+- **根因 ①**：`MandalaGrid` 用 `Set<string>` 只记「强制展开」，可见性判定是 `expanded.has(key) || opts.showNotes`。设置「显示备注」为开时结果恒为 `true`，按钮增删 key 都不改变渲染；为关时也只能单向覆盖。中心格早在 1.3.1 就用 `centerOpen: boolean | null` 三态，环绕格漏了。
+- **修法 ①**：`noteOpen: Map<string, boolean>` 三态（缺省跟随设置 / 显式 `true` / 显式 `false`），按钮每次写入 `!isOpen`；`getNoteOverrides()` / `applyNoteOverrides()` 让手动状态在 `renderFile()` 重建网格后仍保留；翻页、返回上级、下钻照旧清空，避免跨层串状态。按钮 `title` 增加「可覆盖全局设置」提示（中英双语）。
+- **根因 ②**：缩略图 `img` 被放进 `isInteractive()` 白名单以避开单击定位 / 双击编辑，但从未绑定 `click`，CSS 写着 `cursor: default`。
+- **修法 ②**：`GridOptions.onPreviewImage` 回调 + `ImageLightbox`（Obsidian `Modal`）：点击缩略图打开全尺寸预览，`‹` / `›` 或 ← → 在该格多图间环绕切换，显示「第 i 张 / 共 n 张」与原始图片写法，点空白 / ✕ / Esc 关闭；加载失败的图不会打开空预览。全屏视图与 ` ```mandala ` 内嵌块共用同一实现；CSS 改为 `cursor: zoom-in`，新增 `.enm-lightbox-*` 样式并保留手机端尺寸。
+- **回归**：新增 `test_interactions.cjs` **24/24**（两种设置下各测交替切换、中心格三态、跨实例恢复、翻页清空、点击图片回调 payload / 多图 index / 异步块引用 / 失败图、不触发定位与编辑、双语 key、产物特征码、真实笔记图片行）；旧六套 **215** 零改动全绿，合计 **239 项**。`node --check` + esbuild 真打包通过。
+- **部署**：`main.js` 102,115 → **107,555 B**（sha `c39d24dd…`）；`styles.css` 同步更新；`manifest.json` 当时保持 **1.3.2**（1.3.3 起升版）、`data.json` 未变（`ecb107fd…`）。改前整组备份在库外 `~/.workbuddy/tmp/9go-v132-interactions.bak-20261115T1845/`。
+- **版本状态**：这两项修复已于本轮升版为 **1.3.3** 并发布 `v1.3.3`（详见第十二轮）；Release 的 `main.js` 与本机部署产物逐字节一致。此前 `v1.3.2` 于 17:18 发布，其资产不含这两项修复。
+- **待实测**：完全退出 Obsidian 重开 → 在设置「显示备注」开 / 关两种情况下各连点同一格按钮 3 次，确认「收 ↔ 放」交替；点击 `gogo+九宫.md` 的 Engelbart 缩略图，确认弹出大图、多图切换、Esc / 点空白关闭。
+
+## 版本升级 1.3.3 + 正式发布（2026-11-15 第十二轮）
+
+- **需求**：第十一轮的两项交互修复已人工实测生效，正式升版 `1.3.3` 并发布到 GitHub，让 BRAT / 市场用户也能拿到修复。
+- **版本**：`manifest.json` **1.3.2 → 1.3.3**；`package.json` 同步；`versions.json` 增加 `"1.3.3": "1.8.7"`。`main.js` 不因改版本号而重新生成（版本号不在 bundle 内），仍为第十一轮的 `107,555 B` / `c39d24dd…`；`data.json` 未变。
+- **发布资料**：`999其他文件/9go-release-1.3.3/` 含 4 资产（`main.js` / `manifest.json` / `styles.css` / `versions.json`）、24 个仓库文件（比 1.3.2 多 `test_interactions.cjs`）、中英两版 Release 正文、`sha256.txt` 与默认 dry-run 的发布执行器。
+- **文档**：`CHANGELOG.md` / `CHANGELOG.en.md` 把两项交互修复与 239 项回归拆到独立的 1.3.3 条目，1.3.2 条目恢复为其实际发布时的 215 项回归，历史不再混淆。
+- **验证**：七套 harness **239 项**全绿；`node --check` + esbuild 真打包；`repo-docs/` 单独构建与 Release 资产逐字节一致（`absWorkingDir: SRC` 保证）；线上核验 4/4 资产 sha256 与 `sha256.txt` 一致。
+- **凭据**：PAT 只在库外 `~/.workbuddy/secrets/github_pat.txt`，发布后须立即吊销并删除。
+
 ## 已知限制
 
 - 备注以纯文本显示（**v1.3.2 起图片是唯一例外**：图片语法从原始行抽出后渲染成 `<img>` 缩略图，其余 Markdown 仍不渲染），wikilink 会显示别名文字、不可点击；这样避免 XSS 与异步渲染开销。缩略图不解析 HTML、不执行脚本，`[[笔记#^块ID]]` 只读取目标块第一张图、不递归。

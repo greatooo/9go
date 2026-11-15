@@ -1,7 +1,30 @@
 # 变更日志（中文）
 
-版本号与 `manifest.json` 一致；每次发布对应一个 GitHub Release（tag 形如 `v1.3.2`）。
+版本号与 `manifest.json` 一致；每次发布对应一个 GitHub Release（tag 形如 `v1.3.3`）。
 English version: [CHANGELOG.en.md](CHANGELOG.en.md)
+
+## 1.3.3 — 2026-11-15
+
+**备注展开/收起真正可切换、缩略图点击放大。**
+
+### 备注展开/收起可真正来回切换
+
+- 原实现用 `Set<string>` 只记录「强制展开」，可见性判定为 `expanded.has(key) || showNotes`：设置里「显示备注」开着时恒为展开，按钮怎么点都无效；关着时也只能单向覆盖。
+- 改为 `Map<string, boolean>` 三态：未记录 → 跟随设置，显式 `true` / `false` → 覆盖设置。按钮每次写入 `!当前状态`，因此两种设置下都能「展开 ↔ 收起」稳定交替，箭头与提示文案同步变化。
+- 手动覆盖通过 `getNoteOverrides()` / `applyNoteOverrides()` 在 `renderFile()` 重建网格后保留；翻页、返回上级、下钻仍按原规则清空，避免跨层串状态。
+
+### 点击缩略图放大查看
+
+- 缩略图此前只被加进「交互白名单」以避开定位 / 编辑，**没有绑定任何 click 事件**，CSS 还是 `cursor: default`。
+- 现在点击任意缩略图打开全尺寸预览弹窗：`‹` / `›` 或 ← → 在该格多图间环绕切换，显示「第 i 张 / 共 n 张」与图片原始写法，点空白处 / ✕ / Esc 关闭；加载失败的图片不会打开空预览。鼠标指针改为放大样式。
+- 预览走 `GridOptions.onPreviewImage` 回调，由全屏视图与 ` ```mandala ` 内嵌块共同注入；点击查看不会触发单击定位或双击编辑。
+
+### 回归
+
+- 七套 harness 共 **239 项**：`test_core` 81 / `test_grid` 70 / `test_real_note` 10 / `test_images` 19 / `test_edit_notes` 21 / `test_i18n` 14 / `test_interactions` 24，全部通过。
+- `node --check` + esbuild 真打包通过；本机无 `tsc`，类型检查由打包与 239 项回归替代。
+
+> **版本说明**：这两项交互修复最初是 `v1.3.2` 发布后的本机补丁（manifest 一度保持 1.3.2）。为让 BRAT / 市场用户拿到修复，本次正式升版 **1.3.3** 并发布 `v1.3.3`；Release 的 `main.js` 与本机部署产物逐字节一致。`v1.3.2` 于 2026-11-15 17:18 发布（release 445937371），其资产不含这两项修复。
 
 ## 1.3.2 — 2026-11-15
 
@@ -31,9 +54,9 @@ English version: [CHANGELOG.en.md](CHANGELOG.en.md)
 ### 回归
 
 - 六套 harness 共 **215 项**：`test_core` 81 / `test_grid` 70 / `test_real_note` 10 / `test_images` 19 / `test_edit_notes` 21 / `test_i18n` 14，全部通过。
-- `node --check` + esbuild 真打包通过；本机无 `tsc`，类型检查由打包与 215 项回归替代。
+- `node --check` + esbuild 真打包通过；本机无 `tsc`，类型检查由打包与回归替代。
 
-> 1.3.2 的 manifest 版本号在图片预览功能时由 1.3.1 升为 1.3.2；后续「编辑保真」与「双语界面」属于同版本内的功能完善，按「补丁不升版本」铁律保持 1.3.2 不变。
+> 1.3.2 由 1.3.1 升版（图片缩略图），「编辑保真」与「双语界面」属同版本内完善。**v1.3.2 已于 2026-11-15 17:18 发布到 GitHub（release 445937371）**；发布后的两项交互修复见 1.3.3。
 
 ## 1.3.1 — 2026-11-12
 

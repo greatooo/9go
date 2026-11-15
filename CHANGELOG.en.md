@@ -1,7 +1,30 @@
 # Changelog (English)
 
-Versions match `manifest.json`; every release has a GitHub Release with a tag such as `v1.3.2`.
+Versions match `manifest.json`; every release has a GitHub Release with a tag such as `v1.3.3`.
 中文版：[CHANGELOG.md](CHANGELOG.md)
+
+## 1.3.3 — 2026-11-15
+
+**Note toggle flips both ways; click a thumbnail to enlarge it.**
+
+### Note toggle really flips both ways
+
+- The old `Set<string>` could only record "force open", and visibility was computed as `expanded.has(key) || showNotes`. With **Show notes** ON the result was always `true`, so pressing the cell button did nothing; with it OFF the override was still one-directional.
+- Replaced by a `Map<string, boolean>` tri-state: no entry follows the setting; explicit `true` / `false` overrides it. Each click writes `!current`, so open ↔ closed alternates reliably under either setting, with the arrow and tooltip following suit.
+- Manual overrides survive `renderFile()` grid rebuilds via `getNoteOverrides()` / `applyNoteOverrides()`. Paging, going back up and drilling down still clear them so states never leak between levels.
+
+### Click a thumbnail to enlarge it
+
+- Thumbnails were only added to the interactive whitelist to avoid locating / editing, but **no click listener was ever attached**, and CSS said `cursor: default`.
+- Clicking a thumbnail now opens a full-size preview dialog. `‹` / `›` or the arrow keys cycle through the images in that cell, a "i of n" counter and the raw image syntax are shown, and clicking outside / ✕ / Esc closes it. A broken image never opens an empty preview. The cursor is now a zoom-in pointer.
+- The preview is wired through `GridOptions.onPreviewImage`, shared by the full view and embedded ` ```mandala ` blocks. Clicking still never triggers single-click locating or double-click editing.
+
+### Regression
+
+- Seven harnesses, **239 checks**: `test_core` 81 / `test_grid` 70 / `test_real_note` 10 / `test_images` 19 / `test_edit_notes` 21 / `test_i18n` 14 / `test_interactions` 24 — all passing.
+- `node --check` and a real esbuild bundle pass. `tsc` is not installed on this machine; type checking is substituted by the bundle plus the 239 checks.
+
+> **Version note**: these two interaction fixes first shipped as local-only post-`v1.3.2` patches (the manifest briefly stayed at 1.3.2). To make them available to BRAT / community-plugin users, this release bumps the manifest to **1.3.3** and publishes `v1.3.3`; the Release `main.js` is byte-identical to the locally deployed build. `v1.3.2` was published on 2026-11-15 at 17:18 (release 445937371) and its assets do not contain these fixes.
 
 ## 1.3.2 — 2026-11-15
 
@@ -31,9 +54,9 @@ Versions match `manifest.json`; every release has a GitHub Release with a tag su
 ### Regression
 
 - Six harnesses, **215 checks**: `test_core` 81 / `test_grid` 70 / `test_real_note` 10 / `test_images` 19 / `test_edit_notes` 21 / `test_i18n` 14 — all passing.
-- `node --check` and a real esbuild bundle pass. `tsc` is not installed on this machine; type checking is substituted by the bundle plus the 215 checks.
+- `node --check` and a real esbuild bundle pass. `tsc` is not installed; type checking is substituted by the bundle plus the checks.
 
-> The manifest was bumped 1.3.1 → 1.3.2 for the image-preview feature. The later note-editing fix and bilingual UI are enhancements within the same version, so the manifest stays at 1.3.2 (patches do not bump the version).
+> 1.3.2 was bumped from 1.3.1 for image thumbnails; the note-editing fix and bilingual UI were enhancements within that version. **v1.3.2 was published to GitHub on 2026-11-15 at 17:18 (release 445937371)**; the two post-release interaction fixes are documented under 1.3.3.
 
 ## 1.3.1 — 2026-11-12
 

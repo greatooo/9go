@@ -5,7 +5,7 @@
 9go turns any Markdown outline into a **3×3 Mandala grid**: the centre is the current node and the eight surrounding cells are its children. Creating, editing, reordering and locating nodes all write plain Markdown back into your note — no private file format.
 
 - Syntax and interaction follow **[gogoga-mindmap](https://github.com/JackWeiGogoga/gogoga-mindmap)**, but this is an **independent implementation** of the same data model. Both plugins can be enabled at once (all view/command ids use the `9go-` prefix).
-- Current version **1.3.2** (`minAppVersion` 1.8.7). Requires Obsidian ≥ 1.8.7.
+- Current version **1.3.3** (`minAppVersion` 1.8.7). Requires Obsidian ≥ 1.8.7.
 - License: 0BSD.
 
 ---
@@ -60,7 +60,11 @@ Settings: **Show image thumbnails** (on by default) and **Max thumbnail height**
 
 **Editable raw notes.** Since 1.3.2, the edit dialog shows the *raw* note lines, so `![alt](url)`, `![[x.png|200]]`, `[[note#^block-id]]`, trailing `^block-id` and `%%markers%%` are visible and can be edited, replaced or deleted. Writing back keeps the `> ` blockquote syntax (list nodes are indented one extra level).
 
-Why this matters: a note line containing only an image used to produce an empty notes box; saving without any change would silently **delete the image line** from the Markdown file. `updateNode()` now compares the textarea against the raw notes and, when unchanged, skips note rewriting entirely — images, block ids, tables, callout headers and CRLF endings stay byte-for-byte intact. Command-palette names are registered at load time; after changing the language, reload the plugin to refresh those names.
+Why this matters: a note line containing only an image used to produce an empty notes box; saving without any change would silently **delete the image line** from the Markdown file. `updateNode()` now compares the textarea against the raw notes and, when unchanged, skips note rewriting entirely — images, block ids, tables, callout headers and CRLF endings stay byte-for-byte intact.
+
+**Click to enlarge (1.3.3).** Clicking a thumbnail opens a full-size preview dialog (`ImageLightbox`, built on Obsidian's `Modal`). `‹` / `›` or the arrow keys cycle through the images in that cell, a counter and the raw image syntax are shown, and clicking outside, ✕ or Esc closes it. Broken images never open an empty preview, and clicking still never triggers single-click locating or double-click editing. The cursor is now `zoom-in`. The preview is injected through `GridOptions.onPreviewImage` into both the full view and embedded ` ```mandala ` blocks.
+
+**Note visibility is a real tri-state (1.3.3).** Per-cell note toggles used to be a `Set` that could only force notes open, so with **Show notes** ON the button appeared to do nothing. Each cell now holds an explicit `true` / `false` override (no override follows the setting), so the button flips both ways under either setting. Overrides survive grid rebuilds; paging, going back up and drilling down clear them.
 
 ---
 
@@ -114,6 +118,20 @@ Notes use the gogoga convention: a paragraph following a node belongs to that no
 
 ---
 
+## Release 1.3.3 (2026-11-15)
+
+The two interaction fixes above were verified manually and then promoted to a real
+version bump: `manifest.json` / `package.json` are now **1.3.3**, and `versions.json`
+maps 1.3.1 / 1.3.2 / 1.3.3 to `1.8.7`. The `main.js` in this Release is byte-identical
+to the locally deployed build (107,555 B); `data.json` is never overwritten.
+
+- Seven harnesses, **239 checks** (81 / 70 / 10 / 19 / 21 / 14 / 24) — all green.
+- `v1.3.2` (published earlier the same day, release 445937371) does **not** contain
+  these fixes; upgrade to 1.3.3 to get them.
+- Release notes and changelogs are provided in both Chinese and English.
+
+---
+
 ## Build & test
 
 ```bash
@@ -121,9 +139,10 @@ node build.js          # bundles main.ts -> .obsidian/plugins/9go/main.js
                        # also emits .core-test-bundle.cjs for Node harnesses
 node test_core.cjs && node test_grid.cjs && node test_real_note.cjs
 node test_images.cjs && node test_edit_notes.cjs && node test_i18n.cjs
+node test_interactions.cjs
 ```
 
-The build uses esbuild (`--bundle --platform=browser --format=cjs --target=es2018 --external:obsidian --charset=utf8`). Six harnesses total **215 checks** (81 / 70 / 10 / 19 / 21 / 14). `main.js` is a build artifact: it is a Release asset only, never committed to the repository.
+The build uses esbuild (`--bundle --platform=browser --format=cjs --target=es2018 --external:obsidian --charset=utf8`). Seven harnesses total **239 checks** (81 / 70 / 10 / 19 / 21 / 14 / 24). `main.js` is a build artifact: it is a Release asset only, never committed to the repository.
 
 ---
 

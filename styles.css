@@ -213,13 +213,75 @@
   border: 1px solid var(--enm-border);
   border-radius: 4px;
   background: var(--enm-bg-center);
-  cursor: default;
+  cursor: zoom-in;
   user-select: none;
 }
 .enm-thumb-failed { display: none; }
 @media (max-width: 620px) {
   .enm-thumbs { max-height: 64px; }
   .enm-thumb { max-height: 64px; }
+}
+
+/* ---------------------------------- image lightbox (1.3.2 patch, 11-15)
+   Opened by clicking a .enm-thumb. The Obsidian modal container also gets
+   inline sizes, so theme CSS cannot shrink the viewer. No :has() anywhere. */
+.enm-lightbox-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.86);
+}
+.enm-lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-normal, #eee);
+}
+.enm-lightbox-counter { font-size: 0.9em; opacity: 0.85; }
+.enm-lightbox-close,
+.enm-lightbox-nav {
+  cursor: pointer;
+  border: 1px solid var(--enm-border, #555);
+  border-radius: 6px;
+  background: var(--enm-bg-center, #222);
+  color: var(--text-normal, #eee);
+  font-size: 1.15em;
+  line-height: 1;
+  padding: 6px 10px;
+  flex: 0 0 auto;
+}
+.enm-lightbox-nav { font-size: 1.8em; padding: 4px 12px; }
+.enm-lightbox-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 0;
+}
+.enm-lightbox-img {
+  display: block;
+  max-width: 88vw;
+  max-height: 76vh;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--enm-bg-center, #222);
+  user-select: none;
+}
+.enm-lightbox-failed { opacity: 0.25; }
+.enm-lightbox-caption,
+.enm-lightbox-hint {
+  text-align: center;
+  word-break: break-all;
+  font-size: 0.82em;
+  color: var(--text-muted, #bbb);
+}
+.enm-lightbox-hint { opacity: 0.7; }
+@media (max-width: 620px) {
+  .enm-lightbox-img { max-width: 84vw; max-height: 66vh; }
+  .enm-lightbox-close, .enm-lightbox-nav { padding: 10px 14px; }
 }
 
 .enm-link {

@@ -61,10 +61,23 @@ export const STRINGS = {
     en: "Drill down with this node as centre",
   },
   toggleNotesAria: { zh: "展开/收起备注", en: "Expand / collapse notes" },
+  toggleNotesTitle: {
+    zh: "展开/收起本格备注（可覆盖全局设置）",
+    en: "Expand / collapse notes for this cell (overrides the setting)",
+  },
   locateAria: { zh: "在 Markdown 中打开并定位", en: "Open and locate in Markdown" },
   editNodeAria: { zh: "编辑节点标题与备注", en: "Edit node title and notes" },
   imageFallback: { zh: "图片", en: "Image" },
   imageAlt: { zh: "图片缩略图", en: "Image thumbnail" },
+  imageZoomTitle: { zh: "点击放大查看图片", en: "Click to enlarge" },
+  imageLightboxClose: { zh: "关闭图片预览", en: "Close image preview" },
+  imageLightboxPrev: { zh: "上一张图片", en: "Previous image" },
+  imageLightboxNext: { zh: "下一张图片", en: "Next image" },
+  imageLightboxCounter: { zh: "第 {i} 张 / 共 {n} 张", en: "{i} of {n}" },
+  imageLightboxHint: {
+    zh: "点击空白处或按 Esc 关闭；左右方向键切换图片",
+    en: "Click outside or press Esc to close; arrow keys switch images",
+  },
   backLink: { zh: "← 返回", en: "← Back" },
   moreChildren: {
     zh: "更多子节点 ({from}–{to}) ›",
