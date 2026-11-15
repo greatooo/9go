@@ -18,6 +18,16 @@
  * which is exactly the mandala drill-down model.
  */
 
+/** v1.3.2: an image reference found on a node's RAW title / note line. */
+export interface NoteImage {
+  /** external = http(s)/data/app URL; file = vault attachment; block = [[note#^id]] */
+  kind: "external" | "file" | "block";
+  src: string;
+  alt: string;
+  width?: number;
+  blockId?: string;
+}
+
 export interface OutlineNode {
   id: string;
   title: string;
@@ -25,6 +35,17 @@ export interface OutlineNode {
   level: number;
   line: number;
   notes: string[];
+  /** v1.3.2: legacy (unstripped) notes, used when thumbnails are OFF. */
+  rawNotes?: string[];
+  /**
+   * v1.3.2 patch: RAW note lines for the EDIT modal. Only the structural
+   * prefix (indent + one `> `) is removed; image embeds, wikilinks, block
+   * ids and %%markers%% stay intact so they are visible and editable.
+   * Optional so hand-built nodes in tests / edit flows stay valid.
+   */
+  editNotes?: string[];
+  /** Optional so hand-built nodes in tests / edit flows stay valid. */
+  images?: NoteImage[];
   children: OutlineNode[];
   parent: OutlineNode | null;
 }
@@ -85,6 +106,125 @@ export function cleanNote(input: string): string {
   return s.trim();
 }
 
+// ------------------------------------------------------------------ //
+// v1.3.2 · image references in notes
+// ------------------------------------------------------------------ //
+// cleanTitle()/cleanNote() deliberately strip link syntax for a readable
+// plain-text preview, which also destroys the image URL. These helpers run
+// on the RAW source line first, so the grid can render a real thumbnail.
+
+const IMAGE_URL_RE = /^(https?:\/\/|data:image\/|app:\/\/|file:\/\/)/i;
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|avif)(?:[?#].*)?$/i;
+
+/** `Engelbart|200` -> ["Engelbart", 200]; a pure numeric alias is only a size. */
+function splitImageAlias(raw: string): [string, number | undefined] {
+  const parts = String(raw ?? "").split("|");
+  const alt = (parts[0] || "").trim();
+  const n = parts.length > 1 ? parseInt(parts[parts.length - 1], 10) : NaN;
+  return [alt, Number.isFinite(n) && n > 0 ? n : undefined];
+}
+
+/**
+ * Collect image references from ONE raw line. Supported forms:
+ *   ![alt|200](https://host/x.png#pic_center)  -> external
+ *   ![alt](attachments/x.png)                 -> file (vault resource path)
+ *   ![[x.png]] / ![[x.png|200]]               -> file (or external if URL)
+ *   [[note#^blockid]] / ![[note#^blockid]]    -> block (resolved later)
+ * A plain [[wikilink]] without an image extension is NOT an image.
+ */
+export function extractNoteImages(raw: string): NoteImage[] {
+  const s = String(raw ?? "");
+  const out: NoteImage[] = [];
+  const taken: Array<[number, number]> = [];
+  const overlaps = (a: number, b: number) => taken.some(([x, y]) => a < y && b > x);
+
+  // 1) wiki embeds / block references. Keep the consumed spans so a later
+  //    markdown-image match inside the same text is not counted twice.
+  const wiki = /(!?\[\[([^\]]+)\]\])/g;
+  let m: RegExpExecArray | null;
+  while ((m = wiki.exec(s)) !== null) {
+    const whole = m[1];
+    const inner = m[2];
+    const start = m.index;
+    const end = start + whole.length;
+    const parts = inner.split("|");
+    const target = (parts[0] || "").trim();
+    const alias = (parts[1] || "").trim();
+    const bm = /#\^([A-Za-z0-9_-]+)\s*$/.exec(target);
+    if (bm) {
+      out.push({
+        kind: "block",
+        src: target.replace(/#\^[A-Za-z0-9_-]+\s*$/, "").trim(),
+        alt: alias || target,
+        blockId: bm[1],
+      });
+      taken.push([start, end]);
+    } else if (whole.startsWith("!") && (IMAGE_EXT_RE.test(target) || /^\d+$/.test(alias))) {
+      // `![[x.png|200]]`: the alias itself is the width (no second pipe),
+      // whereas `![[x.png|caption|200]]` goes through splitImageAlias().
+      const width = /^\d+$/.test(alias)
+        ? Number(alias)
+        : splitImageAlias(alias)[1];
+      out.push({
+        kind: IMAGE_URL_RE.test(target) ? "external" : "file",
+        src: target,
+        alt: alias && !/^\d+$/.test(alias) ? alias : target.split("/").pop() || target,
+        width,
+      });
+      taken.push([start, end]);
+    }
+  }
+
+  // 2) markdown images (URL may carry a #fragment such as #pic_center).
+  const md = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  while ((m = md.exec(s)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (overlaps(start, end)) continue;
+    const [alt, width] = splitImageAlias(m[1]);
+    const url = m[2];
+    out.push({
+      kind: IMAGE_URL_RE.test(url) ? "external" : "file",
+      src: url,
+      alt,
+      width,
+    });
+    taken.push([start, end]);
+  }
+  return out;
+}
+
+/** Remove image syntax so the plain-text preview keeps no `!alt|200` leftovers. */
+export function stripImageSyntax(raw: string): string {
+  let s = String(raw ?? "");
+  s = s.replace(/!\[\[([^\]]+)\]\]/g, " ");
+  s = s.replace(/\[\[([^\]]*#\^[A-Za-z0-9_-]+)(?:\|[^\]]*)?\]\]/g, " ");
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, " ");
+  return s;
+}
+
+/**
+ * v1.3.2 patch · RAW note text for the EDIT modal.
+ *
+ * Removes ONLY the structural prefix (leading indent + one `> ` quote
+ * marker). Unlike cleanNote() it keeps every inline syntax byte-for-byte,
+ * so `![alt](url)`, `![[x.png]]`, `[[note#^id]]`, a trailing `^blockid`
+ * and `%%tag%%` all show up in the textarea and can be edited / removed.
+ *
+ * Returns "" for lines that are not user-editable note content, mirroring
+ * the lines parseOutline()/updateNode() skip (callout header, standalone
+ * marker, horizontal rule, fence).
+ */
+export function stripNotePrefix(raw: string): string {
+  let s = String(raw ?? "").trim().replace(/^>\s?/, "").trim();
+  if (!s) return "";
+  if (/^\[!note\]/i.test(s)) return "";
+  if (/^%%[\s\S]*%%$/.test(s)) return "";
+  if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(s)) return "";
+  if (/^(?:`{3,}|~{3,})/.test(s)) return "";
+  return s;
+}
+
 /** Leading whitespace -> logical indent units (Tab = 1, 2 spaces = 1). */
 function indentOf(line: string): number {
   const m = /^([ \t]*)/.exec(line);
@@ -109,6 +249,9 @@ function makeNode(
     level,
     line,
     notes: [],
+    rawNotes: [],
+    editNotes: [], // v1.3.2 patch: raw lines for the edit modal
+    images: extractNoteImages(raw), // v1.3.2: images in the node title itself
     children: [],
     parent,
   };
@@ -227,8 +370,30 @@ export function parseOutline(text: string, options: ParseOptions): Outline {
     // gogoga convention: a paragraph following a node belongs to that node.
     // Blank lines and fenced code blocks do NOT break the attachment, because
     // real notes often put a marker / blank line between heading and note.
-    const note = cleanNote(line);
+    // v1.3.2: harvest image refs from the RAW line before cleanNote() eats
+    // the URL, then strip the syntax so no `!alt|200` text is left behind.
+    const imgs = extractNoteImages(line);
+    if (imgs.length) {
+      if (!lastNode.images) lastNode.images = [];
+      lastNode.images.push(...imgs);
+    }
+    // v1.3.2 patch: keep the raw line for the edit modal. A line made only
+    // of an image produces no `notes` entry at all, so without this the
+    // textarea is empty AND a no-op save would delete the image line.
+    const editable = stripNotePrefix(line);
+    if (editable) {
+      if (!lastNode.editNotes) lastNode.editNotes = [];
+      lastNode.editNotes.push(editable);
+    }
+    const note = cleanNote(stripImageSyntax(line));
     if (note.trim() !== "") lastNode.notes.push(note);
+    // Keep the old plain-text form too: when thumbnails are disabled the grid
+    // must render exactly what 1.3.1 rendered (no silent loss of the alt text).
+    const legacy = cleanNote(line);
+    if (legacy.trim() !== "") {
+      if (!lastNode.rawNotes) lastNode.rawNotes = [];
+      lastNode.rawNotes.push(legacy);
+    }
   }
 
   // Optional: display the first H1 as the center label instead of the filename.
@@ -264,6 +429,28 @@ export function notePreview(node: OutlineNode, maxChars: number): string {
   const joined = node.notes.join("\n").replace(/\n{3,}/g, "\n\n").trim();
   if (maxChars <= 0 || joined.length <= maxChars) return joined;
   return joined.slice(0, maxChars).trimEnd() + "…";
+}
+
+/**
+ * v1.3.2: legacy preview for the "thumbnails OFF" case — uses the unstripped
+ * note lines so switching the toggle off never makes text disappear.
+ */
+export function notePreviewRaw(node: OutlineNode, maxChars: number): string {
+  const lines = node.rawNotes && node.rawNotes.length ? node.rawNotes : node.notes;
+  if (!lines.length) return "";
+  const joined = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (maxChars <= 0 || joined.length <= maxChars) return joined;
+  return joined.slice(0, maxChars).trimEnd() + "…";
+}
+
+/**
+ * v1.3.2 patch · notes as they should appear in the node EDIT modal.
+ * Falls back to the cleaned preview notes for hand-built / legacy nodes.
+ */
+export function nodeEditNotes(node: OutlineNode): string[] {
+  const raw = node.editNotes;
+  if (raw && raw.length) return raw.slice();
+  return (node.notes || []).slice();
 }
 
 /** Count descendants (immediate children only by default). */
@@ -656,32 +843,47 @@ export function updateNode(
   let end = Math.min(secEnd, firstChild);
   if (end <= i) end = i + 1;
 
-  const oldNoteIdx: number[] = [];
-  let fence: string | null = null;
-  for (let k = i + 1; k < end; k += 1) {
-    const ln = lines[k];
-    const fm = /^\s*(`{3,}|~{3,})/.exec(ln);
-    if (fm) {
-      const mk = fm[1][0];
-      if (fence === null) fence = mk;
-      else if (fence === mk) fence = null;
-      continue;
-    }
-    if (fence !== null) continue;
-    if (ln.trim() === "") continue;
-    if (/^\s*%%[\s\S]*%%\s*$/.test(ln)) continue;
-    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(ln)) continue; // horizontal rule
-    if (lineLevel(ln) !== null) continue; // a heading / list line is structure
-    oldNoteIdx.push(k);
-  }
+  // v1.3.2 patch: compare the textarea against the RAW editable notes,
+  // NOT the cleaned preview notes. When nothing changed, leave every
+  // original note line byte-for-byte intact (image embeds, block ids,
+  // tables, callout headers) so a no-op save can never delete them.
+  const normNotes = (arr: string[]): string[] =>
+    arr.map((v) => String(v ?? "").trim()).filter((v) => v.length > 0);
+  const incoming = normNotes(spec.notes || []);
+  const current = normNotes(nodeEditNotes(node));
+  const notesUnchanged =
+    incoming.length === current.length &&
+    incoming.every((v, k) => v === current[k]);
+  if (notesUnchanged && !titleChanged) return text;
 
-  const insertAt = oldNoteIdx.length ? oldNoteIdx[0] : i + 1;
-  const block = noteLines(spec.notes, noteStyle, noteIndent);
-  // Remove from the back so the earlier indices stay valid.
-  for (let k = oldNoteIdx.length - 1; k >= 0; k -= 1) {
-    lines.splice(oldNoteIdx[k], 1);
+  if (!notesUnchanged) {
+    const oldNoteIdx: number[] = [];
+    let fence: string | null = null;
+    for (let k = i + 1; k < end; k += 1) {
+      const ln = lines[k];
+      const fm = /^\s*(`{3,}|~{3,})/.exec(ln);
+      if (fm) {
+        const mk = fm[1][0];
+        if (fence === null) fence = mk;
+        else if (fence === mk) fence = null;
+        continue;
+      }
+      if (fence !== null) continue;
+      if (ln.trim() === "") continue;
+      if (/^\s*%%[\s\S]*%%\s*$/.test(ln)) continue;
+      if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(ln)) continue; // horizontal rule
+      if (lineLevel(ln) !== null) continue; // a heading / list line is structure
+      oldNoteIdx.push(k);
+    }
+
+    const insertAt = oldNoteIdx.length ? oldNoteIdx[0] : i + 1;
+    const block = noteLines(spec.notes, noteStyle, noteIndent);
+    // Remove from the back so the earlier indices stay valid.
+    for (let k = oldNoteIdx.length - 1; k >= 0; k -= 1) {
+      lines.splice(oldNoteIdx[k], 1);
+    }
+    if (block.length) lines.splice(insertAt, 0, ...block);
   }
-  if (block.length) lines.splice(insertAt, 0, ...block);
   if (titleChanged) lines[i] = marker + title + trailingMarkers(oldRaw);
 
   return lines.join(nl);

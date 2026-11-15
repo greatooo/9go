@@ -34,20 +34,25 @@ import {
 } from "obsidian";
 import {
   collapseSingleRoot,
+  extractNoteImages,
   findNodeAtLine,
   findNodeByLine,
   insertChildNode,
   nodePath,
+  nodeEditNotes,
   notePreview,
+  notePreviewRaw,
   parseOutline,
   promoteChildNode,
   reorderChildren,
   updateNode,
   type NewNodeSpec,
   type NewNodeNoteStyle,
+  type NoteImage,
   type Outline,
   type OutlineNode,
 } from "./parser";
+import { tr, setLanguage, slotLabel, type Lang } from "./i18n";
 import {
   buildSlots,
   cellLabel,
@@ -55,7 +60,6 @@ import {
   clampPage,
   compactNumber,
   dropFinalAt,
-  FIRST_SLOT_LABEL,
   FIRST_SLOT_ORDER,
   moreRange,
   moveIndices,
@@ -76,6 +80,10 @@ interface NineGoSettings {
   keywords: string;
   showNotes: boolean;
   noteMaxChars: number;
+  /** v1.3.2: render image thumbnails found in a node's title / notes. */
+  showThumbnails: boolean;
+  /** v1.3.2: max thumbnail height in px (clamped 32..320 by the renderer). */
+  thumbMaxHeight: number;
   rootSource: "filename" | "firstH1";
   autoCollapseSingleRoot: boolean;
   embedHeight: number;
@@ -87,6 +95,8 @@ interface NineGoSettings {
   sortDirection: SortDirection;
   showSlotCoords: boolean;
   enableDragReorder: boolean;
+  /** v1.3.2: UI language. "zh" keeps the original Chinese strings. */
+  language: Lang;
   followCursor: boolean;
   followCursorMode: "self" | "parent";
 }
@@ -96,6 +106,8 @@ const DEFAULT_SETTINGS: NineGoSettings = {
   keywords: "mandala",
   showNotes: false,
   noteMaxChars: 120,
+  showThumbnails: true,
+  thumbMaxHeight: 96,
   rootSource: "filename",
   autoCollapseSingleRoot: false,
   embedHeight: 460,
@@ -107,6 +119,7 @@ const DEFAULT_SETTINGS: NineGoSettings = {
   sortDirection: "cw",
   showSlotCoords: false,
   enableDragReorder: true,
+  language: "zh",
   followCursor: false,
   followCursorMode: "parent",
 };
@@ -241,12 +254,65 @@ class LocateFlash {
 }
 
 // ------------------------------------------------------------------ //
+// v1.3.2 · image URL resolution (vault access lives here, not in the grid)
+// ------------------------------------------------------------------ //
+
+/** Cap thumbnails per cell so one image-heavy node cannot swallow the grid. */
+const MAX_THUMBS_PER_CELL = 3;
+
+/** Resolve a NoteImage to something an <img src> accepts. */
+function imageSrc(app: App, ref: NoteImage, sourcePath: string): string | null {
+  if (ref.kind === "external") return ref.src;
+  if (ref.kind !== "file") return null;
+  const f = app.metadataCache.getFirstLinkpathDest(ref.src, sourcePath);
+  if (!(f instanceof TFile)) return null;
+  const vault = app.vault as unknown as { getResourcePath?: (file: TFile) => string };
+  if (typeof vault.getResourcePath === "function") return vault.getResourcePath(f);
+  const adapter = app.vault.adapter as unknown as {
+    getResourcePath?: (path: string) => string;
+  };
+  return typeof adapter.getResourcePath === "function"
+    ? adapter.getResourcePath(f.path)
+    : null;
+}
+
+/**
+ * `[[note#^blockid]]` -> read the target note -> find the block line ->
+ * take the first image inside it. Kept one level deep (no recursive blocks).
+ */
+async function blockImageSrc(
+  app: App,
+  ref: NoteImage,
+  sourcePath: string
+): Promise<string | null> {
+  if (!ref.blockId) return null;
+  const f = app.metadataCache.getFirstLinkpathDest(ref.src || "", sourcePath);
+  if (!(f instanceof TFile)) return null;
+  const text = await app.vault.cachedRead(f);
+  const id = ref.blockId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tail = new RegExp("\\^" + id + "\\s*$");
+  const line = text.split(/\r?\n/).find((l) => tail.test(l.trimEnd()));
+  if (!line) return null;
+  for (const im of extractNoteImages(line)) {
+    if (im.kind === "block") continue;
+    const src = imageSrc(app, im, f.path);
+    if (src) return src;
+  }
+  return null;
+}
+
+// ------------------------------------------------------------------ //
 // Grid renderer (shared by the ItemView and the ```mandala code block)
 // ------------------------------------------------------------------ //
 
 interface GridOptions {
   showNotes: boolean;
   noteMaxChars: number;
+  /** v1.3.2 opt-in: left undefined by the older DOM harnesses. */
+  showThumbnails?: boolean;
+  thumbMaxHeight?: number;
+  resolveImageSrc?: (img: NoteImage) => string | null;
+  resolveBlockImage?: (img: NoteImage) => Promise<string | null>;
   autoCollapseSingleRoot: boolean;
   singleClickLocate?: boolean;
   slots?: Array<[number, number]>;
@@ -513,7 +579,7 @@ class MandalaGrid {
     cell.addClass("enm-center-droptarget");
     cell.setAttr(
       "title",
-      "拖动子节点到这里：上升一级，与中心节点同级"
+      tr("dropCenterHint")
     );
     cell.addEventListener("dragover", (e) => {
       if (this.dragFrom === null) return;
@@ -566,8 +632,8 @@ class MandalaGrid {
   private renderToolbar(bar: HTMLElement): void {
     const left = bar.createDiv({ cls: "enm-toolbar-left" });
 
-    const up = left.createEl("button", { cls: "enm-btn", text: "↑ 返回上级" });
-    up.setAttr("aria-label", "返回上级九宫格");
+    const up = left.createEl("button", { cls: "enm-btn", text: tr("backUp") });
+    up.setAttr("aria-label", tr("backUpAria"));
     up.disabled = this.stack.length <= 1;
     up.addEventListener("click", () => {
       if (this.stack.length <= 1) return;
@@ -578,7 +644,7 @@ class MandalaGrid {
     });
 
     const crumb = left.createSpan({ cls: "enm-crumb" });
-    const names = this.stack.map((n) => n.title || "(未命名)");
+    const names = this.stack.map((n) => n.title || tr("untitled"));
     crumb.setText(names.join("  ›  ") || this.outline.fileTitle);
 
     const right = bar.createDiv({ cls: "enm-toolbar-right" });
@@ -586,7 +652,7 @@ class MandalaGrid {
     const pages = Math.max(this.totalPages, this.page + 1);
     if (pages > 1 || this.page > 0) {
       const prev = right.createEl("button", { cls: "enm-btn", text: "‹" });
-      prev.setAttr("aria-label", "上一页");
+      prev.setAttr("aria-label", tr("prevPage"));
       prev.disabled = this.page <= 0;
       prev.addEventListener("click", () => {
         this.page = clampPage(this.page - 1, this.center.children.length);
@@ -597,7 +663,7 @@ class MandalaGrid {
         text: `${this.page + 1} / ${pages}`,
       });
       const next = right.createEl("button", { cls: "enm-btn", text: "›" });
-      next.setAttr("aria-label", "下一页");
+      next.setAttr("aria-label", tr("nextPage"));
       next.disabled = this.page >= this.totalPages;
       next.addEventListener("click", () => {
         this.page = clampPage(this.page + 1, this.center.children.length);
@@ -605,14 +671,14 @@ class MandalaGrid {
       });
     }
     const count = this.center.children.length;
-    right.createSpan({ cls: "enm-countinfo", text: `${count} 个子节点` });
+    right.createSpan({ cls: "enm-countinfo", text: tr("childCount", { n: count }) });
     if (this.focusLine >= 0) {
-      right.createSpan({ cls: "enm-follow-badge", text: "⌖ 跟随光标" });
+      right.createSpan({ cls: "enm-follow-badge", text: tr("followCursorBadge") });
     }
 
     if (this.opts.onOpenMarkdown) {
       const md = right.createEl("button", { cls: "enm-btn", text: "MD ↗" });
-      md.setAttr("aria-label", "在 Markdown 中打开本笔记");
+      md.setAttr("aria-label", tr("openNoteAria"));
       md.addEventListener("click", () => this.opts.onOpenMarkdown!());
     }
   }
@@ -648,7 +714,7 @@ class MandalaGrid {
     cTitle.setAttr(
       "title",
       centerEditable
-        ? `${this.center.title}（双击编辑标题与备注）`
+        ? tr("centerTitleEditable", { title: this.center.title })
         : this.center.title
     );
     if (centerEditable) {
@@ -668,7 +734,7 @@ class MandalaGrid {
         cls: "enm-cell-edit enm-center-edit",
         text: "✎",
       });
-      edit.setAttr("aria-label", "编辑中心节点标题与备注");
+      edit.setAttr("aria-label", tr("editCenterAria"));
       edit.addEventListener("click", () => this.opts.onEditNode!(this.center));
     }
     this.addNoteBlock(centerCell, this.center, "center", centerNotesOpen);
@@ -677,7 +743,7 @@ class MandalaGrid {
     if (this.stack.length > 1) {
       const back = centerLinks.createEl("a", {
         cls: "enm-link",
-        text: "← 返回上级",
+        text: tr("backUpLink"),
         href: "#",
       });
       back.addEventListener("click", (e) => {
@@ -690,14 +756,14 @@ class MandalaGrid {
       });
     }
     if (children.length === 0) {
-      centerCell.createDiv({ cls: "enm-empty-hint", text: "（无下级节点）" });
+      centerCell.createDiv({ cls: "enm-empty-hint", text: tr("noChildren") });
     }
 
     const toggleCenter = centerCell.createEl("button", {
       cls: "enm-cell-toggle",
       text: centerNotesOpen ? "⌃" : "⌄",
     });
-    toggleCenter.setAttr("aria-label", "展开/收起中心备注");
+    toggleCenter.setAttr("aria-label", tr("toggleCenterNotesAria"));
     toggleCenter.addEventListener("click", () => {
       this.centerOpen = !centerNotesOpen;
       this.render();
@@ -738,8 +804,8 @@ class MandalaGrid {
         // Empty cell: double-click to create a new child node in the note.
         if (this.opts.onAddNode) {
           cell.addClass("enm-cell-addable");
-          cell.setAttr("title", "双击添加子节点（标题 + 备注）");
-          cell.createDiv({ cls: "enm-add-hint", text: "+ 双击添加" });
+          cell.setAttr("title", tr("addChildTitle"));
+          cell.createDiv({ cls: "enm-add-hint", text: tr("addChildHint") });
           cell.addEventListener("dblclick", (e) => {
             if (this.isInteractive(e)) return;
             this.cancelPendingLocate();
@@ -759,8 +825,8 @@ class MandalaGrid {
       title.setAttr(
         "title",
         hasSub
-          ? `${this.slotNumber(slot)} ${node.title}（单击左下「下级 ${node.children.length}」进入下一级；单击空白处定位 MD；双击空白处编辑；拖动可调整同级顺序）`
-          : `${this.slotNumber(slot)} ${node.title}（双击标题进入以其为中心的九宫格；单击空白处定位 MD；双击空白处编辑；拖动可调整同级顺序）`
+          ? tr("cellTitleWithChildren", { slot: this.slotNumber(slot), title: node.title, sub: node.children.length })
+          : tr("cellTitleLeaf", { slot: this.slotNumber(slot), title: node.title })
       );
       // 标题双击：无下级 -> 以该叶节点为中心进入九宫格（可继续加子节点）；
       // 有下级 -> 不响应，统一走左下「下级 N」单击进入。
@@ -808,10 +874,10 @@ class MandalaGrid {
       if (sub > 0) {
         const childCount = cell.createDiv({
           cls: "enm-childcount enm-childcount-drill",
-          text: `下级 ${sub}`,
+          text: tr("childrenN", { n: sub }),
         });
-        childCount.setAttr("title", "单击进入下一级九宫格");
-        childCount.setAttr("aria-label", "以该节点为中心进入下级");
+        childCount.setAttr("title", tr("enterNextLevel"));
+        childCount.setAttr("aria-label", tr("enterAsCenterAria"));
         childCount.addEventListener("click", (e) => {
           e.stopPropagation();
           this.cancelPendingLocate();
@@ -825,7 +891,7 @@ class MandalaGrid {
         cls: "enm-cell-toggle",
         text: isOpen ? "⌃" : "⌄",
       });
-      toggle.setAttr("aria-label", "展开/收起备注");
+      toggle.setAttr("aria-label", tr("toggleNotesAria"));
       toggle.addEventListener("click", () => {
         if (this.expanded.has(key)) this.expanded.delete(key);
         else this.expanded.add(key);
@@ -837,7 +903,7 @@ class MandalaGrid {
           cls: "enm-cell-locate",
           text: "↗",
         });
-        locate.setAttr("aria-label", "在 Markdown 中打开并定位");
+        locate.setAttr("aria-label", tr("locateAria"));
         locate.addEventListener("click", () => this.opts.onLocate!(node, true));
       }
 
@@ -847,7 +913,7 @@ class MandalaGrid {
           cls: "enm-cell-edit",
           text: "✎",
         });
-        edit.setAttr("aria-label", "编辑节点标题与备注");
+        edit.setAttr("aria-label", tr("editNodeAria"));
         edit.addEventListener("click", () => this.opts.onEditNode!(node));
       }
 
@@ -864,9 +930,9 @@ class MandalaGrid {
     return !!t.closest(selector);
   }
 
-  /** Ignore clicks that originate on a link / button / form control. */
+  /** Ignore clicks on a link / button / form control / v1.3.2 thumbnail. */
   private isInteractive(e: Event): boolean {
-    return this.targetMatches(e, "a, button, input, textarea, .enm-cell-links");
+    return this.targetMatches(e, "a, button, input, textarea, img, .enm-cell-links");
   }
 
   private makeCell(row: number, col: number, extra: string): HTMLElement {
@@ -882,13 +948,64 @@ class MandalaGrid {
     key: string,
     visible: boolean
   ): void {
-    const text = notePreview(node, this.opts.noteMaxChars);
-    if (!text) return;
-    if (!visible) return;
-    const box = cell.createDiv({ cls: "enm-notes" });
-    box.setText(text);
-    box.setAttr("title", text);
     void key;
+    if (!visible) return;
+    // Thumbnails ON -> notes with image syntax stripped; OFF -> the exact
+    // 1.3.1 plain-text preview (nothing silently disappears).
+    const thumbsOn = this.opts.showThumbnails === true;
+    const text = thumbsOn
+      ? notePreview(node, this.opts.noteMaxChars)
+      : notePreviewRaw(node, this.opts.noteMaxChars);
+    if (text) {
+      const box = cell.createDiv({ cls: "enm-notes" });
+      box.setText(text);
+      box.setAttr("title", text);
+    }
+
+    // v1.3.2: thumbnails are opt-in via GridOptions so older DOM harnesses
+    // keep rendering pure text. A node may have images but no note text.
+    if (!thumbsOn) return;
+    const refs = (node.images || []).slice(0, MAX_THUMBS_PER_CELL);
+    if (!refs.length) return;
+
+    const rawH = Number(this.opts.thumbMaxHeight);
+    const maxH = Number.isFinite(rawH) && rawH > 0
+      ? Math.max(32, Math.min(320, rawH))
+      : 96;
+    const wrap = cell.createDiv({ cls: "enm-thumbs" });
+    wrap.setAttr("style", `--enm-thumb-max-h:${maxH}px`);
+
+    for (const ref of refs) {
+      const img = wrap.createEl("img", { cls: "enm-thumb" });
+      const label = ref.kind === "block"
+        ? `[[${ref.src}#^${ref.blockId}]]`
+        : ref.src || ref.alt || tr("imageFallback");
+      img.setAttr("alt", ref.alt || tr("imageAlt"));
+      img.setAttr("title", label);
+      img.setAttr("loading", "lazy");
+      img.addEventListener("error", () => img.addClass("enm-thumb-failed"));
+
+      const direct = this.opts.resolveImageSrc
+        ? this.opts.resolveImageSrc(ref)
+        : ref.kind === "external" ? ref.src : null;
+      if (direct) {
+        img.setAttr("src", direct);
+        continue;
+      }
+      if (ref.kind === "block" && this.opts.resolveBlockImage) {
+        void this.opts
+          .resolveBlockImage(ref)
+          .then((src) => {
+            // render() may have rebuilt the grid while the file was read.
+            if ((img as unknown as { isConnected?: boolean }).isConnected === false) return;
+            if (src) img.setAttr("src", src);
+            else img.addClass("enm-thumb-failed");
+          })
+          .catch(() => img.addClass("enm-thumb-failed"));
+        continue;
+      }
+      img.addClass("enm-thumb-failed");
+    }
   }
 
   private addPageLinks(cell: HTMLElement): void {
@@ -896,7 +1013,7 @@ class MandalaGrid {
     if (this.page > 0) {
       const back = box.createEl("a", {
         cls: "enm-link",
-        text: "← 返回",
+        text: tr("backLink"),
         href: "#",
       });
       back.addEventListener("click", (e) => {
@@ -913,7 +1030,7 @@ class MandalaGrid {
     const [from, to] = moreRange(this.center.children.length, this.page);
     const more = box.createEl("a", {
       cls: "enm-link enm-link-more",
-      text: `更多子节点 (${from}–${to}) ›`,
+      text: tr("moreChildren", { from, to }),
       href: "#",
     });
     more.addEventListener("click", (e) => {
@@ -972,8 +1089,8 @@ class NodeModal extends Modal {
     // 新建/编辑同构：无大标题，第一行「标题 + 输入框」，其下「备注 + 输入框」，
     // 说明折叠在最后（native details/summary 提供下拉三角，默认收起）。
 
-    new Setting(contentEl).setName("标题").addText((t) => {
-      t.setPlaceholder("输入标题…")
+    new Setting(contentEl).setName(tr("modalTitle")).addText((t) => {
+      t.setPlaceholder(tr("modalTitlePlaceholder"))
         .setValue(this.titleValue)
         .onChange((v) => {
           this.titleValue = v;
@@ -982,10 +1099,13 @@ class NodeModal extends Modal {
     });
 
     const wrap = contentEl.createDiv({ cls: "enm-modal-notes-wrap" });
-    wrap.createDiv({ cls: "enm-modal-label", text: "备注" });
+    wrap.createDiv({ cls: "enm-modal-label", text: tr("modalNotes") });
     const ta = wrap.createEl("textarea", {
       cls: "enm-modal-notes",
-      attr: { rows: "6", placeholder: "输入备注内容，每行一条…" },
+      attr: {
+        rows: "6",
+        placeholder: tr("modalNotesPlaceholder"),
+      },
     }) as HTMLTextAreaElement;
     ta.value = this.noteValue;
     this.noteInput = ta;
@@ -997,16 +1117,16 @@ class NodeModal extends Modal {
       const details = contentEl.createEl("details", {
         cls: "enm-modal-hint-details",
       });
-      details.createEl("summary", { text: editing ? "编辑说明" : "新建说明" });
+      details.createEl("summary", { text: editing ? tr("editHintLabel") : tr("createHintLabel") });
       details.createDiv({ cls: "enm-modal-hint", text: this.opts.hint });
     }
 
     const bar = contentEl.createDiv({ cls: "enm-modal-actions" });
-    const cancel = bar.createEl("button", { cls: "enm-btn", text: "取消" });
+    const cancel = bar.createEl("button", { cls: "enm-btn", text: tr("cancel") });
     cancel.addEventListener("click", () => this.close());
     const ok = bar.createEl("button", {
       cls: "enm-btn mod-cta",
-      text: editing ? "保存修改" : "添加节点",
+      text: editing ? tr("saveEdit") : tr("addNode"),
     });
     ok.addEventListener("click", () => this.submit());
 
@@ -1027,7 +1147,7 @@ class NodeModal extends Modal {
   private submit(): void {
     const title = (this.titleValue || "").trim();
     if (!title) {
-      new Notice("请填写节点标题");
+      new Notice(tr("noticeTitleRequired"));
       this.titleInput?.focus();
       return;
     }
@@ -1076,7 +1196,7 @@ class MandalaView extends ItemView {
   }
 
   getDisplayText(): string {
-    return this.file ? `九宫格 · ${this.file.basename}` : "九宫格 · Mandala";
+    return this.file ? tr("viewTitle", { name: this.file.basename }) : tr("viewTitleEmpty");
   }
 
   getIcon(): string {
@@ -1126,7 +1246,7 @@ class MandalaView extends ItemView {
     this.contentEl.empty();
     this.contentEl.createDiv({
       cls: "enm-empty",
-      text: "未指定笔记。请通过命令面板「以九宫格打开当前笔记」或在笔记 frontmatter 加 mandala: true。",
+      text: tr("noFileSpecified"),
     });
   }
 
@@ -1156,6 +1276,11 @@ class MandalaView extends ItemView {
     const grid = new MandalaGrid(host, outline, {
       showNotes: s.showNotes,
       noteMaxChars: s.noteMaxChars,
+      // v1.3.2: thumbnails in the full-screen view (source = current file).
+      showThumbnails: s.showThumbnails,
+      thumbMaxHeight: s.thumbMaxHeight,
+      resolveImageSrc: (ref) => imageSrc(this.app, ref, file.path),
+      resolveBlockImage: (ref) => blockImageSrc(this.app, ref, file.path),
       autoCollapseSingleRoot: s.autoCollapseSingleRoot,
       singleClickLocate: s.singleClickLocate,
       slots: buildSlots(s.firstSlot, s.sortDirection),
@@ -1269,7 +1394,7 @@ class MandalaView extends ItemView {
   private notifyNoMarkdownOnce(): void {
     if (this.noMarkdownNotified) return;
     this.noMarkdownNotified = true;
-    new Notice("未找到同一笔记的 Markdown 视图；可在设置里把「无分屏时」改为自动分屏或新标签。");
+    new Notice(tr("noMarkdownView"));
   }
 
   /**
@@ -1334,11 +1459,12 @@ class MandalaView extends ItemView {
     const center = this.grid.center;
     const index = center.children.length + 1;
     const crumb = this.grid.getStackTitles().join(" › ");
-    const hint =
-      `你双击了编号 ${this.grid.slotNumber(slot)} 的空格。新节点按顺序追加为` +
-      `「${crumb}」的第 ${index} 个子节点，编号 ${childNumber(this.grid.centerPath(), index)}` +
-      `；前面的格子未满 8 个时，会自动排在最后一个有内容的节点之后（不占用「更多子节点」格）。` +
-      `标题与备注会写回当前笔记。`;
+    const hint = tr("createHint", {
+      slot: this.grid.slotNumber(slot),
+      crumb,
+      index,
+      number: childNumber(this.grid.centerPath(), index),
+    });
     new NodeModal(this.app, {
       mode: "create",
       hint,
@@ -1360,13 +1486,13 @@ class MandalaView extends ItemView {
         findNodeByLine(fresh.root, this.grid.center.line) ?? fresh.root;
       const next = insertChildNode(text, center, spec, s.newNodeNoteStyle);
       if (next === text) {
-        new Notice("未写入：节点标题为空。");
+        new Notice(tr("noticeNotWritten"));
         return;
       }
       await this.app.vault.modify(file, next);
-      new Notice(`已添加子节点「${spec.title}」`);
+      new Notice(tr("noticeAdded", { title: spec.title }));
     } catch (e) {
-      new Notice("写入节点失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(tr("noticeWriteFailed") + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -1378,7 +1504,7 @@ class MandalaView extends ItemView {
     const file = this.file;
     if (!file) return;
     if (!node.parent) {
-      new Notice("笔记标题（根中心）没有对应的 Markdown 行，请在 Markdown 中修改文件名或第一个标题。");
+      new Notice(tr("noticeRootNoLine"));
       return;
     }
     try {
@@ -1390,22 +1516,24 @@ class MandalaView extends ItemView {
       });
       const target = findNodeByLine(fresh.root, node.line);
       if (!target || !target.parent) {
-        new Notice("未找到该节点对应的 Markdown 行，请刷新九宫格后重试。");
+        new Notice(tr("noticeNodeNotFound"));
         return;
       }
-      const styleText = s.newNodeNoteStyle === "callout" ? "> 引用块" : "普通段落";
-      const hint =
-        `正在编辑「${target.title}」。标题与备注会写回当前笔记；备注按当前设置以 ${styleText} ` +
-        `重写（下级节点、兄弟节点、frontmatter 不受影响）。标题未改动时原行原样保留。`;
+      const styleText = s.newNodeNoteStyle === "callout" ? tr("styleCallout") : tr("styleParagraph");
+      const hint = tr("editHint", { title: target.title, style: styleText });
       new NodeModal(this.app, {
         mode: "edit",
         title: target.title,
-        notes: target.notes,
+        // v1.3.2 patch: raw notes keep image embeds / links / block ids,
+        // so they are visible AND editable in the textarea. Passing the
+        // cleaned `target.notes` here used to show an empty box and made a
+        // no-op save DELETE the image line from the Markdown file.
+        notes: nodeEditNotes(target),
         hint,
         onSubmit: (spec) => void this.writeNodeEdit(target.line, spec),
       }).open();
     } catch (e) {
-      new Notice("读取笔记失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(tr("noticeReadFailed") + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -1421,18 +1549,18 @@ class MandalaView extends ItemView {
       });
       const target = findNodeByLine(fresh.root, line);
       if (!target || !target.parent) {
-        new Notice("节点已变化，未写入。");
+        new Notice(tr("noticeNodeChanged"));
         return;
       }
       const next = updateNode(text, target, spec, s.newNodeNoteStyle);
       if (next === text) {
-        new Notice("节点内容没有变化。");
+        new Notice(tr("noticeNoChange"));
         return;
       }
       await this.app.vault.modify(file, next);
-      new Notice(`已更新节点「${spec.title}」`);
+      new Notice(tr("noticeUpdated", { title: spec.title }));
     } catch (e) {
-      new Notice("更新节点失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(tr("noticeUpdateFailed") + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -1463,9 +1591,9 @@ class MandalaView extends ItemView {
       const next = reorderChildren(text, freshCenter, order);
       if (next === text) return;
       await this.app.vault.modify(file, next);
-      new Notice(`已调整顺序：第 ${from + 1} 个 → 第 ${finalAt + 1} 个`);
+      new Notice(tr("noticeReordered", { from: from + 1, to: finalAt + 1 }));
     } catch (e) {
-      new Notice("调整顺序失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(tr("noticeReorderFailed") + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -1478,7 +1606,7 @@ class MandalaView extends ItemView {
     if (!file || !this.grid) return;
     const center = this.grid.center;
     if (!center.parent) {
-      new Notice("中心已是根节点（笔记标题），子节点无法再上升一级。");
+      new Notice(tr("noticeRootAlready"));
       return;
     }
     const node = center.children[from];
@@ -1492,20 +1620,20 @@ class MandalaView extends ItemView {
       });
       const freshCenter = findNodeByLine(fresh.root, center.line);
       if (!freshCenter || !freshCenter.parent) {
-        new Notice("未找到该节点对应的 Markdown 行，请刷新九宫格后重试。");
+        new Notice(tr("noticeNodeNotFound"));
         return;
       }
       if (from < 0 || from >= freshCenter.children.length) return;
       const moved = freshCenter.children[from];
       const next = promoteChildNode(text, freshCenter, from);
       if (next === text) {
-        new Notice("未写入：该节点无法上升一级（结构不允许）。");
+        new Notice(tr("noticeCannotPromote"));
         return;
       }
       await this.app.vault.modify(file, next);
-      new Notice(`已将「${moved.title}」上升一级，与「${freshCenter.title}」同级`);
+      new Notice(tr("noticePromoted", { title: moved.title, center: freshCenter.title }));
     } catch (e) {
-      new Notice("上升节点失败：" + (e instanceof Error ? e.message : String(e)));
+      new Notice(tr("noticePromoteFailed") + (e instanceof Error ? e.message : String(e)));
     }
   }
 }
@@ -1526,12 +1654,12 @@ export default class NineGoPlugin extends Plugin {
 
     this.addCommand({
       id: "9go-open",
-      name: "以九宫格（Mandala）打开当前笔记",
+      name: tr("commandOpen"),
       callback: () => this.openActive(true),
     });
     this.addCommand({
       id: "9go-replace",
-      name: "九宫格：把当前标签切换为 Mandala 视图",
+      name: tr("commandSwitch"),
       callback: () => this.openActive(false),
     });
 
@@ -1540,7 +1668,7 @@ export default class NineGoPlugin extends Plugin {
         if (!(file instanceof TFile)) return;
         menu.addItem((item) => {
           item
-            .setTitle("以九宫格（Mandala）打开")
+            .setTitle(tr("commandMenu"))
             .setIcon(ICON)
             .onClick(() => void this.openFile(file, true));
         });
@@ -1548,13 +1676,20 @@ export default class NineGoPlugin extends Plugin {
     );
 
     // embedded ```mandala code blocks
-    this.registerMarkdownCodeBlockProcessor("mandala", (source, el) => {
-      const outline = parseOutline(source, { fileTitle: "九宫格" });
+    this.registerMarkdownCodeBlockProcessor("mandala", (source, el, ctx) => {
+      const outline = parseOutline(source, { fileTitle: tr("embedTitle") });
       const host = el.createDiv({ cls: "enm-embed" });
       host.style.height = `${this.settings.embedHeight}px`;
+      const sourcePath =
+        (ctx as unknown as { sourcePath?: string }).sourcePath || "";
       const grid = new MandalaGrid(host, outline, {
         showNotes: this.settings.showNotes,
         noteMaxChars: this.settings.noteMaxChars,
+        // v1.3.2: thumbnails also work in embedded ```mandala blocks.
+        showThumbnails: this.settings.showThumbnails,
+        thumbMaxHeight: this.settings.thumbMaxHeight,
+        resolveImageSrc: (ref) => imageSrc(this.app, ref, sourcePath),
+        resolveBlockImage: (ref) => blockImageSrc(this.app, ref, sourcePath),
         autoCollapseSingleRoot: this.settings.autoCollapseSingleRoot,
         slots: buildSlots(this.settings.firstSlot, this.settings.sortDirection),
         showSlotCoords: this.settings.showSlotCoords,
@@ -1629,7 +1764,7 @@ export default class NineGoPlugin extends Plugin {
   private async openActive(newTab: boolean): Promise<void> {
     const file = this.app.workspace.getActiveFile();
     if (!file) {
-      new Notice("请先打开一篇 Markdown 笔记");
+      new Notice(tr("noticeOpenMdFirst"));
       return;
     }
     await this.openFile(file, newTab);
@@ -1683,9 +1818,11 @@ export default class NineGoPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    setLanguage(this.settings.language);
   }
 
   async saveSettings(): Promise<void> {
+    setLanguage(this.settings.language);
     await this.saveData(this.settings);
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       const view = leaf.view;
@@ -1716,11 +1853,29 @@ class NineGoSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "9go · 九宫格（Mandala）" });
+    containerEl.createEl("h2", { text: tr("settingsTitle") });
+
+    // v1.3.2: UI language. saveSettings() re-renders every open Mandala
+    // view, so only this settings tab needs an explicit repaint.
+    new Setting(containerEl)
+      .setName(tr("setLanguage"))
+      .setDesc(tr("setLanguageDesc"))
+      .addDropdown((d) =>
+        d
+          .addOption("zh", tr("optLangZh"))
+          .addOption("en", tr("optLangEn"))
+          .addOption("auto", tr("optLangAuto"))
+          .setValue(this.plugin.settings.language)
+          .onChange(async (v) => {
+            this.plugin.settings.language = v as Lang;
+            await this.plugin.saveSettings();
+            window.setTimeout(() => this.display(), 0);
+          })
+      );
 
     new Setting(containerEl)
-      .setName("触发关键词")
-      .setDesc("逗号分隔。frontmatter 键、frontmatter 值或 %%标记%% 命中即识别，默认 mandala。")
+      .setName(tr("setKeywords"))
+      .setDesc(tr("setKeywordsDesc"))
       .addText((t) =>
         t
           .setPlaceholder("mandala")
@@ -1732,8 +1887,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("自动打开标记笔记")
-      .setDesc("打开含关键词的 Markdown 笔记时，自动把该标签切换为九宫格视图（每个文件每次会话最多一次）。")
+      .setName(tr("setAutoOpen"))
+      .setDesc(tr("setAutoOpenDesc"))
       .addToggle((t) =>
         t.setValue(this.plugin.settings.autoOpen).onChange(async (v) => {
           this.plugin.settings.autoOpen = v;
@@ -1742,8 +1897,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("默认显示备注")
-      .setDesc("每个格子在标题下显示部分备注内容；关闭时可用格子右下角 ⌄ 单独展开。")
+      .setName(tr("setShowNotes"))
+      .setDesc(tr("setShowNotesDesc"))
       .addToggle((t) =>
         t.setValue(this.plugin.settings.showNotes).onChange(async (v) => {
           this.plugin.settings.showNotes = v;
@@ -1752,8 +1907,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("备注最大字数")
-      .setDesc("超出部分以 … 截断，避免格子溢出。")
+      .setName(tr("setNoteMaxChars"))
+      .setDesc(tr("setNoteMaxCharsDesc"))
       .addText((t) =>
         t
           .setValue(String(this.plugin.settings.noteMaxChars))
@@ -1765,12 +1920,39 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("中心格标题来源")
-      .setDesc("默认显示笔记标题（文件名）；可改为显示第一个一级标题的文字。仅影响显示，不改变层级结构。")
+      .setName(tr("setThumbnails"))
+      .setDesc(
+        tr("setThumbnailsDesc")
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.showThumbnails).onChange(async (v) => {
+          this.plugin.settings.showThumbnails = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName(tr("setThumbMaxHeight"))
+      .setDesc(tr("setThumbMaxHeightDesc"))
+      .addText((t) =>
+        t
+          .setValue(String(this.plugin.settings.thumbMaxHeight))
+          .onChange(async (v) => {
+            const n = parseInt(v, 10);
+            this.plugin.settings.thumbMaxHeight = Number.isFinite(n)
+              ? Math.max(32, Math.min(320, n))
+              : 96;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(tr("setRootSource"))
+      .setDesc(tr("setRootSourceDesc"))
       .addDropdown((d) =>
         d
-          .addOption("filename", "笔记标题（文件名）")
-          .addOption("firstH1", "第一个一级标题")
+          .addOption("filename", tr("optFilename"))
+          .addOption("firstH1", tr("optFirstH1"))
           .setValue(this.plugin.settings.rootSource)
           .onChange(async (v) => {
             this.plugin.settings.rootSource = v as "filename" | "firstH1";
@@ -1779,8 +1961,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("自动折叠单根")
-      .setDesc("笔记只有一个一级标题时，自动以该标题为中心、显示其二级节点（仍可返回上级）。")
+      .setName(tr("setAutoCollapse"))
+      .setDesc(tr("setAutoCollapseDesc"))
       .addToggle((t) =>
         t
           .setValue(this.plugin.settings.autoCollapseSingleRoot)
@@ -1791,8 +1973,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("内嵌九宫格高度")
-      .setDesc("```mandala 代码块渲染高度（px）。")
+      .setName(tr("setEmbedHeight"))
+      .setDesc(tr("setEmbedHeightDesc"))
       .addText((t) =>
         t
           .setValue(String(this.plugin.settings.embedHeight))
@@ -1803,14 +1985,14 @@ class NineGoSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "排列 · 编号 · 拖动" });
+    containerEl.createEl("h3", { text: tr("secLayout") });
 
     new Setting(containerEl)
-      .setName("第 1 个子节点的位置")
-      .setDesc("环绕 8 格中，第 1 个子节点落在哪个方位；其余按排序方向依次排布，格子左上角的层级编号随之同步调整。")
+      .setName(tr("setFirstSlot"))
+      .setDesc(tr("setFirstSlotDesc"))
       .addDropdown((d) => {
         for (const key of FIRST_SLOT_ORDER) {
-          d.addOption(key, FIRST_SLOT_LABEL[key]);
+          d.addOption(key, slotLabel(key));
         }
         d.setValue(this.plugin.settings.firstSlot).onChange(async (v) => {
           this.plugin.settings.firstSlot = v as FirstSlot;
@@ -1819,12 +2001,12 @@ class NineGoSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("子节点排序方向")
-      .setDesc("从第 1 个节点开始，顺时针或逆时针填满其余格位。")
+      .setName(tr("setSortDirection"))
+      .setDesc(tr("setSortDirectionDesc"))
       .addDropdown((d) =>
         d
-          .addOption("cw", "顺时针")
-          .addOption("ccw", "逆时针")
+          .addOption("cw", tr("optCw"))
+          .addOption("ccw", tr("optCcw"))
           .setValue(this.plugin.settings.sortDirection)
           .onChange(async (v) => {
             this.plugin.settings.sortDirection = v as SortDirection;
@@ -1833,8 +2015,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("显示格位坐标标签")
-      .setDesc("格子右上角额外显示固定坐标 1.1–1.8（与左上角层级编号不同）。默认关闭，避免两套编号混淆。")
+      .setName(tr("setSlotCoords"))
+      .setDesc(tr("setSlotCoordsDesc"))
       .addToggle((t) =>
         t.setValue(this.plugin.settings.showSlotCoords).onChange(async (v) => {
           this.plugin.settings.showSlotCoords = v;
@@ -1843,8 +2025,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("拖动调整同级顺序")
-      .setDesc("拖动子节点到同级两格之间（靠左/上半区=插到它前面，靠右/下半区=插到它后面），同步重排 Markdown 原文中的整段标题与子树。")
+      .setName(tr("setDragReorder"))
+      .setDesc(tr("setDragReorderDesc"))
       .addToggle((t) =>
         t.setValue(this.plugin.settings.enableDragReorder).onChange(async (v) => {
           this.plugin.settings.enableDragReorder = v;
@@ -1854,14 +2036,14 @@ class NineGoSettingTab extends PluginSettingTab {
 
     containerEl.createEl("p", {
       cls: "enm-setting-note",
-      text: "编号规则：一级 1 / 2 / 3…，二级 1.1 / 1.2…，三级 1.1.1…；超过 3 层压缩为「首段...末两段」，例如第 4 级 1.1.1.1 显示为 1...1.1。",
+      text: tr("numberingNote"),
     });
 
-    containerEl.createEl("h3", { text: "交互 · 光标跟随、编辑与定位" });
+    containerEl.createEl("h3", { text: tr("secInteraction") });
 
     new Setting(containerEl)
-      .setName("光标跟随 · 分屏 MD 编辑时自动切换中心")
-      .setDesc("开启后每 250ms 读取活动 Markdown 视图的光标行，把同一笔记的九宫格中心切到光标所在标题/列表节点并高亮对应格；不抢焦点、不写文件。需同时打开 MD 与九宫格两个视图。")
+      .setName(tr("setFollowCursor"))
+      .setDesc(tr("setFollowCursorDesc"))
       .addToggle((t) =>
         t.setValue(this.plugin.settings.followCursor).onChange(async (v) => {
           this.plugin.settings.followCursor = v;
@@ -1870,12 +2052,12 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("光标所在节点没有下级时")
-      .setDesc("回退到父级：以父节点为中心、翻到该节点所在页并高亮该格（推荐，叶子节点也能看到同级）；仍以它为中心：严格按光标节点作中心，环绕 8 格为空。")
+      .setName(tr("setFollowLeaf"))
+      .setDesc(tr("setFollowLeafDesc"))
       .addDropdown((d) =>
         d
-          .addOption("parent", "回退到父级并高亮该格（推荐）")
-          .addOption("self", "仍以光标节点为中心")
+          .addOption("parent", tr("optParent"))
+          .addOption("self", tr("optSelf"))
           .setValue(this.plugin.settings.followCursorMode)
           .onChange(async (v) => {
             this.plugin.settings.followCursorMode = v as "self" | "parent";
@@ -1885,19 +2067,16 @@ class NineGoSettingTab extends PluginSettingTab {
 
     containerEl.createEl("p", {
       cls: "enm-setting-note",
-      text:
-        "交互分工（固定，不再提供开关）：有下级的节点 → 点左下「下级 N」进入下一级（双击标题不响应）；" +
-        "无下级的节点 → 双击标题进入以其为中心的九宫格；单击节点空白处 → 在分屏 Markdown 中定位；" +
-        "双击节点空白处（或点右下 ✎）→ 编辑标题与备注；空白格双击 → 新建子节点。",
+      text: tr("interactionNote"),
     });
 
     new Setting(containerEl)
-      .setName("新建节点 · 备注写法")
-      .setDesc("双击空白格输入标题与备注，按当前层级写回笔记（九宫格视图中始终可用，内嵌 ```mandala 代码块除外）。列表节点的备注自动缩进一层，避免顶格 > 引用块打断列表，使下级节点在阅读模式里退化成「- 」纯文本。")
+      .setName(tr("setNoteStyle"))
+      .setDesc(tr("setNoteStyleDesc"))
       .addDropdown((d) =>
         d
-          .addOption("callout", "备注写成 > 引用块（推荐，最安全）")
-          .addOption("paragraph", "备注写成普通段落")
+          .addOption("callout", tr("optCallout"))
+          .addOption("paragraph", tr("optParagraph"))
           .setValue(this.plugin.settings.newNodeNoteStyle)
           .onChange(async (v) => {
             this.plugin.settings.newNodeNoteStyle = v as NewNodeNoteStyle;
@@ -1906,8 +2085,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("单击节点联动 Markdown 分屏")
-      .setDesc("单击中心格或子格时，跳到同一笔记的 Markdown 视图对应行，并像搜索结果一样高亮一下再淡化。")
+      .setName(tr("setSingleClick"))
+      .setDesc(tr("setSingleClickDesc"))
       .addToggle((t) =>
         t.setValue(this.plugin.settings.singleClickLocate).onChange(async (v) => {
           this.plugin.settings.singleClickLocate = v;
@@ -1916,8 +2095,8 @@ class NineGoSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("高亮持续时间")
-      .setDesc("定位后高亮保持的时长（毫秒，300–10000），到时再淡出约 220ms；输入后按回车或点到别处生效。")
+      .setName(tr("setHighlight"))
+      .setDesc(tr("setHighlightDesc"))
       .addText((t) => {
         const commit = (raw: string, save: boolean): void => {
           const n = parseInt(raw, 10);
@@ -1953,13 +2132,13 @@ class NineGoSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("无分屏 Markdown 时")
-      .setDesc("找不到同一笔记的 Markdown 视图时：自动分屏 / 新标签打开 / 不处理。")
+      .setName(tr("setFallback"))
+      .setDesc(tr("setFallbackDesc"))
       .addDropdown((d) =>
         d
-          .addOption("split", "自动分屏打开")
-          .addOption("tab", "新标签打开")
-          .addOption("none", "不处理")
+          .addOption("split", tr("optSplit"))
+          .addOption("tab", tr("optTab"))
+          .addOption("none", tr("optNone"))
           .setValue(this.plugin.settings.locateFallback)
           .onChange(async (v) => {
             this.plugin.settings.locateFallback = v as "none" | "split" | "tab";
@@ -1967,28 +2146,28 @@ class NineGoSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "用法" });
+    containerEl.createEl("h3", { text: tr("secUsage") });
     const ul = containerEl.createEl("ul");
-    ul.createEl("li", { text: "frontmatter：mandala: true 或 mindmap-structure: mandala" });
-    ul.createEl("li", { text: "行内标记：%%mandala%%" });
-    ul.createEl("li", { text: "内嵌：```mandala 代码块，块内用同样的 Markdown 大纲" });
-    ul.createEl("li", { text: "双击空白格 → 输入标题 + 备注，按当前层级写回笔记（追加为最后一个子节点）" });
-    ul.createEl("li", { text: "双击已填充格 → 编辑该节点标题 + 备注（可在设置里改回下钻）；✎ / ⤵ 按钮触发另一种操作" });
-    ul.createEl("li", { text: "单击中心格 / 子格 → 在分屏 MD 中定位并高亮对应节点行；高亮按「高亮持续时间」设置保持（默认 1400ms）后淡出" });
-    ul.createEl("li", { text: "开启「光标跟随」后，MD 光标移动 → 九宫格中心自动切到该节点并高亮对应格（工具栏 ⌖ 标记）" });
-    ul.createEl("li", { text: "格子右下角 ↗ → 强制在 Markdown 中打开并定位；中心格「返回上级」回退" });
-    ul.createEl("li", { text: "拖动子节点到同级两格之间 → 调整同级顺序并写回 Markdown" });
-    ul.createEl("li", { text: "拖动子节点到中心格 → 该节点上升一级，成为与中心同级的下一个兄弟" });
-    ul.createEl("li", { text: "序列末格（第 8 格）无论有无内容都常驻「更多子节点 (9–16) ›」，点击进入下一批节点的编辑页；新建节点始终按顺序排在最后一个有内容节点之后" });
+    ul.createEl("li", { text: tr("usage1") });
+    ul.createEl("li", { text: tr("usage2") });
+    ul.createEl("li", { text: tr("usage3") });
+    ul.createEl("li", { text: tr("usage4") });
+    ul.createEl("li", { text: tr("usage5") });
+    ul.createEl("li", { text: tr("usage6") });
+    ul.createEl("li", { text: tr("usage7") });
+    ul.createEl("li", { text: tr("usage8") });
+    ul.createEl("li", { text: tr("usage9") });
+    ul.createEl("li", { text: tr("usage10") });
+    ul.createEl("li", { text: tr("usage11") });
 
-    containerEl.createEl("h3", { text: "参考与致谢" });
+    containerEl.createEl("h3", { text: tr("secReference") });
     new Setting(containerEl)
-      .setName("语法与交互参考：gogoga-mindmap")
+      .setName(tr("setReference"))
       .setDesc(
-        "本插件的九宫格写法（标题 / 列表 / Tab 备注 / %%标记%%）参考自 JackWeiGogoga 的 gogoga-mindmap，按同一套数据模型独立实现，两个插件可同时启用、互不干扰。源码与文档见其仓库。"
+        tr("setReferenceDesc")
       )
       .addButton((b) =>
-        b.setButtonText("打开 GitHub").onClick(() => {
+        b.setButtonText(tr("openGitHub")).onClick(() => {
           window.open(REFERENCE_REPO_URL, "_blank");
         })
       );

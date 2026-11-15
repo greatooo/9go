@@ -29,6 +29,9 @@ const OUT = process.env.NINEGO_OUT || "E:/OObsidian/.obsidian/plugins/9go";
 fs.mkdirSync(OUT, { recursive: true });
 
 esbuild.buildSync({
+  // Keep module-path comments relative to the source directory, so a build
+  // from a copied repo-docs/ elsewhere reproduces byte-identical output.
+  absWorkingDir: SRC,
   entryPoints: [path.join(SRC, "main.ts")],
   outfile: path.join(OUT, "main.js"),
   bundle: true,
@@ -46,6 +49,7 @@ for (const f of ["manifest.json", "styles.css"]) {
 
 // also emit a CommonJS bundle of the pure core (parser + layout) for tests
 esbuild.buildSync({
+  absWorkingDir: SRC,
   entryPoints: [path.join(SRC, "core.ts")],
   outfile: path.join(SRC, ".core-test-bundle.cjs"),
   bundle: true,

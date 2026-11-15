@@ -16,6 +16,10 @@
   --enm-muted: var(--text-muted, #999);
   --enm-faint: var(--text-faint, #666);
   --enm-accent: var(--interactive-accent, #7c6df2);
+  /* Phone-only clearance for Obsidian's floating bottom navbar. Override these
+     two vars in a CSS snippet to fine-tune on a specific device. */
+  --enm-mobile-side-pad: 12px;
+  --enm-mobile-bottom-pad: 72px;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -181,6 +185,41 @@
   margin-top: auto;
   position: relative;
   z-index: 2;
+}
+
+/* ---------------------------------- note thumbnails (1.3.2, 11-15)
+   Notes stay plain text; images harvested from the RAW source line are drawn
+   as real <img> elements in a separate, non-growing flex row. Height comes
+   from the "缩略图最大高度" setting, written inline as --enm-thumb-max-h.
+   No :has() — this Obsidian build's Chromium silently drops it. */
+.enm-thumbs {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 0;
+  max-height: var(--enm-thumb-max-h, 96px);
+  overflow: hidden;
+}
+.enm-thumb {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: var(--enm-thumb-max-h, 96px);
+  object-fit: contain;
+  border: 1px solid var(--enm-border);
+  border-radius: 4px;
+  background: var(--enm-bg-center);
+  cursor: default;
+  user-select: none;
+}
+.enm-thumb-failed { display: none; }
+@media (max-width: 620px) {
+  .enm-thumbs { max-height: 64px; }
+  .enm-thumb { max-height: 64px; }
 }
 
 .enm-link {
@@ -562,4 +601,18 @@
   .enm-cell-locate { right: 32px; }
   .enm-cell-edit { right: 56px; }
   .enm-center-edit { right: 32px; }
+}
+
+/* ---------------------------------- mobile safe area (1.3.1 hotfix, 11-15)
+   On phones Obsidian's floating .mobile-navbar is positioned OVER the view,
+   so the last grid row and its "下级 N" / round buttons were covered by it.
+   Reserve space below the 3x3 and pull it slightly inward from both edges.
+   Scope to the full view (.enm-root > .enm-grid) only: embedded grids inside
+   a note keep their original padding, and desktop narrow panes are untouched.
+   No :has() — this Obsidian build's Chromium silently drops it. */
+body.is-mobile .enm-root > .enm-grid {
+  padding-left: var(--enm-mobile-side-pad);
+  padding-right: var(--enm-mobile-side-pad);
+  padding-bottom: var(--enm-mobile-bottom-pad);
+  padding-bottom: calc(var(--enm-mobile-bottom-pad) + env(safe-area-inset-bottom, 0px));
 }
